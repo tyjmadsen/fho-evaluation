@@ -1,0 +1,72 @@
+# Data files
+*.gpkg
+fho_all.gpkg
+LSRs_flood_allYears.gpkg
+flood_warnings_all.gpkg
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Output directories
+verification_maps/
+verification_maps_ibw/
+verification_output/
+verification_stats/
+
+# Large binary files
+*.pdf
+*.zip
+*.tar
+*.gz
+*.rar
+*.7z
+
+# System files
+Thumbs.db
+.DS_Store
+desktop.ini 
