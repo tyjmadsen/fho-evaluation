@@ -8,7 +8,9 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ../data:/app/data:ro
+      - ../fho_all.gpkg:/app/fho_all.gpkg:ro
+      - ../LSRs_flood_allYears.gpkg:/app/LSRs_flood_allYears.gpkg:ro
+      - ../flood_warnings_all.gpkg:/app/flood_warnings_all.gpkg:ro
       - ../templates:/app/templates:ro
       - ../static:/app/static:ro
       - ../gunicorn.conf.py:/app/gunicorn.conf.py:ro

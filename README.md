@@ -1,6 +1,6 @@
-# FHO IBW Validation Tool
+# FHO Evaluation Tool
 
-A web application for validating Impact-Based Warning (IBW) forecasts against Flash Flood Warnings (FFWs).
+A web application for evaluating Flood Hazard Outlook (FHO) data.
 
 ## Features
 
@@ -23,89 +23,55 @@ A web application for validating Impact-Based Warning (IBW) forecasts against Fl
 - macOS 10.15 or later
 - Linux (Ubuntu 20.04 or later recommended)
 
-## Quick Start with Docker
+## Docker Setup
 
-1. Install Docker:
-   - Windows/macOS: Download and install [Docker Desktop](https://www.docker.com/products/docker-desktop)
-   - Linux: Install Docker Engine and Docker Compose:
-     ```bash
-     # Ubuntu/Debian
-     sudo apt-get update
-     sudo apt-get install docker.io docker-compose
-     ```
+### Prerequisites
+- Docker Desktop installed
+- At least 4GB of RAM available for Docker
+- The following data files in the project root:
+  - `fho_all.gpkg`
+  - `LSRs_flood_allYears.gpkg`
+  - `flood_warnings_all.gpkg`
 
-2. Clone the repository:
-   ```bash
-   git clone https://github.com/tyjmadsen/fho-evaluation.git
-   cd fho-evaluation
-   ```
+### Running with Docker
 
-3. **IMPORTANT**: Download required data files first:
-   ```bash
-   python download_data.py
-   ```
-   This will download three required files:
-   - fho_all.gpkg (~1.3GB)
-   - LSRs_flood_allYears.gpkg (~8.6MB)
-   - flood_warnings_all.gpkg (~11MB)
+1. Build the Docker container:
+```bash
+docker-compose -f docker/docker-compose.yml build
+```
 
-4. Build and run with Docker Compose:
-   ```bash
-   cd docker
-   docker-compose up --build
-   ```
+2. Start the application:
+```bash
+docker-compose -f docker/docker-compose.yml up
+```
 
-5. Access the application:
-   Open your web browser and navigate to: http://localhost:5000
+3. Access the application:
+- Open your web browser and navigate to `http://localhost:5000`
+- The application will take a few minutes to load the data files initially
 
-## Docker Deployment Guide
+### Docker Configuration
 
-### Configuration
+The Docker setup includes:
+- Optimized Gunicorn configuration for better performance
+- Resource limits (2 CPUs, 4GB RAM)
+- Read-only volume mounts for data files
+- Health checks and automatic restarts
 
-1. Port Configuration:
-   - Default port is 5000
-   - To change the port, modify `docker/docker-compose.yml`:
-     ```yaml
-     ports:
-       - "YOUR_PORT:5000"
-     ```
+### Troubleshooting
 
-2. Volume Mounts:
-   - Data files are mounted from the parent directory
-   - Ensure data files are in the correct location before building
+If you encounter issues:
+1. Check Docker Desktop is running
+2. Verify data files are in the correct location
+3. Check Docker logs for errors:
+```bash
+docker-compose -f docker/docker-compose.yml logs
+```
 
-3. Environment Variables:
-   - Set in `docker/docker-compose.yml` or use a `.env` file
-   - Available variables:
-     - `FLASK_ENV`: Set to `production` or `development`
-     - `PORT`: Application port (default: 5000)
-
-### Production Deployment
-
-For production deployment, additional steps are recommended:
-
-1. Use a production-ready web server:
-   ```dockerfile
-   # In docker/Dockerfile
-   RUN pip install gunicorn
-   CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
-   ```
-
-2. Enable HTTPS:
-   - Set up a reverse proxy (nginx recommended)
-   - Configure SSL certificates
-
-3. Set secure configurations:
-   ```yaml
-   # docker/docker-compose.prod.yml
-   services:
-     web:
-       environment:
-         - FLASK_ENV=production
-         - FLASK_APP=app.py
-       restart: unless-stopped
-       # Add your production configs here
-   ```
+4. If the application fails to start:
+```bash
+docker-compose -f docker/docker-compose.yml down
+docker-compose -f docker/docker-compose.yml up --build
+```
 
 ## Data Files
 

@@ -31,7 +31,7 @@ def load_layer(args):
     year, period = args
     layer_name = f'fho_{year}_{period}'
     try:
-        layer = gpd.read_file('data/fho_all.gpkg', layer=layer_name).to_crs("EPSG:4326")
+        layer = gpd.read_file('fho_all.gpkg', layer=layer_name).to_crs("EPSG:4326")
         print(f"Successfully loaded {layer_name}")
         return layer
     except Exception as e:
@@ -41,7 +41,7 @@ def load_layer(args):
 def load_warning_layer(year):
     """Helper function to load a single warning layer."""
     try:
-        ffw = gpd.read_file("data/flood_warnings_all.gpkg", layer=f"wwa_{year}").to_crs("EPSG:4326")
+        ffw = gpd.read_file("flood_warnings_all.gpkg", layer=f"wwa_{year}").to_crs("EPSG:4326")
         print(f"Successfully loaded flood warnings for {year}")
         return ffw
     except Exception as e:
@@ -70,11 +70,18 @@ def load_data():
 
     print("Combining FHO data...")
     fho_areas = pd.concat(fho_layers, ignore_index=True) if fho_layers else None
+    if fho_areas is None:
+        print("Warning: No FHO areas were loaded successfully")
+        return None, None, None
     print(f"Loaded {len(fho_areas)} FHO areas")
 
     print("Loading LSR data...")
-    lsrs = gpd.read_file("data/LSRs_flood_allYears.gpkg").to_crs("EPSG:4326")
-    print(f"Loaded {len(lsrs)} LSRs")
+    try:
+        lsrs = gpd.read_file("LSRs_flood_allYears.gpkg").to_crs("EPSG:4326")
+        print(f"Loaded {len(lsrs)} LSRs")
+    except Exception as e:
+        print(f"Could not read LSR data: {e}")
+        return None, None, None
 
     print("Loading flood warnings...")
     with ThreadPoolExecutor(max_workers=4) as executor:
@@ -88,6 +95,9 @@ def load_data():
 
     print("Combining flood warnings...")
     ffws = pd.concat(ffws) if ffws else None
+    if ffws is None:
+        print("Warning: No flood warnings were loaded successfully")
+        return None, None, None
     print(f"Loaded {len(ffws)} flood warnings")
 
     # Process timestamps

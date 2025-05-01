@@ -5,8 +5,8 @@ numpy==1.21.2
 shapely==1.7.1
 fiona==1.9.5
 pyproj==3.6.1
-requests==2.31.0
-tqdm==4.66.1
+requests==2.26.0
+tqdm==4.62.3
 gdown==4.7.1
 Werkzeug==2.0.1
 gunicorn==20.1.0
