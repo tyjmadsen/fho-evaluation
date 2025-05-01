@@ -6,6 +6,10 @@ from shapely.geometry import box
 from datetime import datetime, timedelta
 from shapely.ops import unary_union
 import json
+from tqdm import tqdm
+import os
+from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Custom JSON encoder to handle NaN values
 class CustomJSONEncoder(json.JSONEncoder):
@@ -19,46 +23,92 @@ class CustomJSONEncoder(json.JSONEncoder):
 app = Flask(__name__)
 app.json_encoder = CustomJSONEncoder
 
-# Load data
-print("Loading data...")
-# Load FHO data from all years and issuances
-fho_layers = []
-for year in range(2022, 2026):
-    for period in ['am', 'pm']:
-        layer_name = f'fho_{year}_{period}'
-        try:
-            layer = gpd.read_file('fho_all.gpkg', layer=layer_name).to_crs("EPSG:4326")
-            fho_layers.append(layer)
-        except Exception as e:
-            print(f"Could not read layer {layer_name}: {e}")
+# Cache for loaded data
+DATA_CACHE = {}
 
-# Concatenate all data
-fho_areas = pd.concat(fho_layers, ignore_index=True) if fho_layers else None
-
-# Load verification data
-print("Loading verification data...")
-# Load LSR data
-lsrs = gpd.read_file("LSRs_flood_allYears.gpkg").to_crs("EPSG:4326")
-
-# Load flood warnings from all years
-ffws = []
-for year in range(2022, 2026):
+def load_layer(args):
+    """Helper function to load a single layer."""
+    year, period = args
+    layer_name = f'fho_{year}_{period}'
     try:
-        ffw = gpd.read_file("flood_warnings_all.gpkg", layer=f"wwa_{year}").to_crs("EPSG:4326")
-        ffws.append(ffw)
+        layer = gpd.read_file('data/fho_all.gpkg', layer=layer_name).to_crs("EPSG:4326")
+        print(f"Successfully loaded {layer_name}")
+        return layer
+    except Exception as e:
+        print(f"Could not read layer {layer_name}: {e}")
+        return None
+
+def load_warning_layer(year):
+    """Helper function to load a single warning layer."""
+    try:
+        ffw = gpd.read_file("data/flood_warnings_all.gpkg", layer=f"wwa_{year}").to_crs("EPSG:4326")
+        print(f"Successfully loaded flood warnings for {year}")
+        return ffw
     except Exception as e:
         print(f"Could not read flood warnings for {year}: {e}")
+        return None
 
-# Combine all flood warnings
-ffws = pd.concat(ffws) if ffws else None
+# Load data with caching
+def load_data():
+    if 'fho_areas' in DATA_CACHE and 'lsrs' in DATA_CACHE and 'ffws' in DATA_CACHE:
+        return DATA_CACHE['fho_areas'], DATA_CACHE['lsrs'], DATA_CACHE['ffws']
 
-# Convert timestamps to datetime
-lsrs["VALID"] = pd.to_datetime(lsrs["VALID"])
-ffws["ISSUED"] = pd.to_datetime(ffws["ISSUED"])
-ffws["EXPIRED"] = pd.to_datetime(ffws["EXPIRED"])
+    print("Loading FHO data...")
+    years = range(2022, 2026)
+    periods = ['am', 'pm']
+    
+    # Parallel loading of FHO layers
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        fho_layers = []
+        futures = [executor.submit(load_layer, (year, period)) 
+                  for year in years for period in periods]
+        
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Loading FHO layers"):
+            layer = future.result()
+            if layer is not None:
+                fho_layers.append(layer)
 
-# Filter for flood warnings
-ffws = ffws[ffws["PHENOM"] == "FF"]
+    print("Combining FHO data...")
+    fho_areas = pd.concat(fho_layers, ignore_index=True) if fho_layers else None
+    print(f"Loaded {len(fho_areas)} FHO areas")
+
+    print("Loading LSR data...")
+    lsrs = gpd.read_file("data/LSRs_flood_allYears.gpkg").to_crs("EPSG:4326")
+    print(f"Loaded {len(lsrs)} LSRs")
+
+    print("Loading flood warnings...")
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        ffws = []
+        futures = [executor.submit(load_warning_layer, year) for year in years]
+        
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Loading flood warnings"):
+            layer = future.result()
+            if layer is not None:
+                ffws.append(layer)
+
+    print("Combining flood warnings...")
+    ffws = pd.concat(ffws) if ffws else None
+    print(f"Loaded {len(ffws)} flood warnings")
+
+    # Process timestamps
+    print("Processing timestamps...")
+    lsrs["VALID"] = pd.to_datetime(lsrs["VALID"])
+    ffws["ISSUED"] = pd.to_datetime(ffws["ISSUED"])
+    ffws["EXPIRED"] = pd.to_datetime(ffws["EXPIRED"])
+
+    # Filter for flood warnings
+    ffws = ffws[ffws["PHENOM"] == "FF"]
+
+    # Cache the results
+    DATA_CACHE['fho_areas'] = fho_areas
+    DATA_CACHE['lsrs'] = lsrs
+    DATA_CACHE['ffws'] = ffws
+
+    print("Data loading complete!")
+    return fho_areas, lsrs, ffws
+
+# Load data at startup
+fho_areas, lsrs, ffws = load_data()
 
 def get_date_range(issuance_time, forecast_period, fho_issuance_date):
     """Get the date range for a given forecast period based on FHO issuance date."""

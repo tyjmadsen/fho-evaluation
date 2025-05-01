@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   web:
     build:
@@ -6,20 +8,20 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - ../fho_all.gpkg:/app/fho_all.gpkg
-      - ../LSRs_flood_allYears.gpkg:/app/LSRs_flood_allYears.gpkg
-      - ../flood_warnings_all.gpkg:/app/flood_warnings_all.gpkg
+      - ../data:/app/data:ro
+      - ../templates:/app/templates:ro
+      - ../static:/app/static:ro
+      - ../gunicorn.conf.py:/app/gunicorn.conf.py:ro
     environment:
-      - FLASK_ENV=development
-      - FLASK_APP=app.py
-      - PYTHONUNBUFFERED=1
-      - GUNICORN_CMD_ARGS=--timeout 300 --workers 2 --threads 2 --worker-class gthread
+      - FLASK_ENV=production
     deploy:
       resources:
         limits:
-          memory: 16G
+          cpus: '2'
+          memory: 4G
         reservations:
-          memory: 8G
+          cpus: '1'
+          memory: 2G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/"]
       interval: 30s
