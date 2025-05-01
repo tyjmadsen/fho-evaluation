@@ -231,4 +231,37 @@ If you encounter any issues:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Running the Application
+
+### Option 1: Local Development
+1. Navigate to the project directory:
+   ```bash
+   cd fho-evaluation
+   ```
+
+2. Run the application:
+   ```bash
+   python app.py
+   ```
+
+3. Access the application:
+   Open your web browser and navigate to: http://localhost:5000
+
+### Option 2: Docker Deployment
+1. Build and run with Docker Compose:
+   ```bash
+   docker-compose up --build
+   ```
+
+2. Access the application:
+   Open your web browser and navigate to: http://localhost:5000
+
+### Notes
+- The application requires three data files that will be downloaded automatically when needed:
+  - `fho_all.gpkg` (~1.3GB)
+  - `LSRs_flood_allYears.gpkg` (~8.6MB)
+  - `flood_warnings_all.gpkg` (~11MB)
+- These files are not included in the repository due to their size
+- The download script will check if the files exist and download them if needed 
