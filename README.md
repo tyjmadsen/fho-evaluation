@@ -23,56 +23,6 @@ A web application for evaluating Flood Hazard Outlook (FHO) data.
 - macOS 10.15 or later
 - Linux (Ubuntu 20.04 or later recommended)
 
-## Docker Setup
-
-### Prerequisites
-- Docker Desktop installed
-- At least 4GB of RAM available for Docker
-- The following data files in the project root:
-  - `fho_all.gpkg`
-  - `LSRs_flood_allYears.gpkg`
-  - `flood_warnings_all.gpkg`
-
-### Running with Docker
-
-1. Build the Docker container:
-```bash
-docker-compose -f docker/docker-compose.yml build
-```
-
-2. Start the application:
-```bash
-docker-compose -f docker/docker-compose.yml up
-```
-
-3. Access the application:
-- Open your web browser and navigate to `http://localhost:5000`
-- The application will take a few minutes to load the data files initially
-
-### Docker Configuration
-
-The Docker setup includes:
-- Optimized Gunicorn configuration for better performance
-- Resource limits (2 CPUs, 4GB RAM)
-- Read-only volume mounts for data files
-- Health checks and automatic restarts
-
-### Troubleshooting
-
-If you encounter issues:
-1. Check Docker Desktop is running
-2. Verify data files are in the correct location
-3. Check Docker logs for errors:
-```bash
-docker-compose -f docker/docker-compose.yml logs
-```
-
-4. If the application fails to start:
-```bash
-docker-compose -f docker/docker-compose.yml down
-docker-compose -f docker/docker-compose.yml up --build
-```
-
 ## Data Files
 
 The application requires three data files that are not included in the repository due to size:
@@ -125,6 +75,56 @@ These files are automatically downloaded from Google Drive when you run `downloa
 5. Access the application:
    - Open your web browser and navigate to `http://localhost:5000`
    - The application will take a few minutes to load the data files initially
+
+## Docker Setup
+
+### Prerequisites
+- Docker Desktop installed
+- At least 4GB of RAM available for Docker
+- The following data files in the project root:
+  - `fho_all.gpkg`
+  - `LSRs_flood_allYears.gpkg`
+  - `flood_warnings_all.gpkg`
+
+### Running with Docker
+
+1. Build the Docker container:
+```bash
+docker-compose -f docker/docker-compose.yml build
+```
+
+2. Start the application:
+```bash
+docker-compose -f docker/docker-compose.yml up
+```
+
+3. Access the application:
+- Open your web browser and navigate to `http://localhost:5000`
+- The application will take a few minutes to load the data files initially
+
+### Docker Configuration
+
+The Docker setup includes:
+- Optimized Gunicorn configuration for better performance
+- Resource limits (2 CPUs, 4GB RAM)
+- Read-only volume mounts for data files
+- Health checks and automatic restarts
+
+### Troubleshooting
+
+If you encounter issues:
+1. Check Docker Desktop is running
+2. Verify data files are in the correct location
+3. Check Docker logs for errors:
+```bash
+docker-compose -f docker/docker-compose.yml logs
+```
+
+4. If the application fails to start:
+```bash
+docker-compose -f docker/docker-compose.yml down
+docker-compose -f docker/docker-compose.yml up --build
+```
 
 ## Troubleshooting
 
