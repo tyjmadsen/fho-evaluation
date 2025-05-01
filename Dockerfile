@@ -8,7 +8,15 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     libspatialindex-dev \
+    curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV FLASK_APP=app.py
+ENV FLASK_ENV=development
+ENV GUNICORN_CMD_ARGS="--timeout 300 --workers 2 --threads 2 --worker-class gthread"
 
 # Copy requirements first to leverage Docker cache
 COPY requirements.txt .
@@ -16,24 +24,20 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
+# Create necessary directories
+RUN mkdir -p /app/static /app/templates
 
-# Create a data directory
-RUN mkdir -p /app/data
+# Copy only the essential application files
+COPY app.py .
+COPY static/ ./static/
+COPY templates/ ./templates/
 
-# Create a script to check and download data files
-RUN echo '#!/bin/bash\n\
-cd /app\n\
-if [ ! -f "fho_all.gpkg" ] || [ ! -f "LSRs_flood_allYears.gpkg" ] || [ ! -f "flood_warnings_all.gpkg" ]; then\n\
-    echo "Required data files are missing. Please run the download script first:"\n\
-    echo "python download_data.py"\n\
-    exit 1\n\
-fi\n\
-python app.py' > /app/start.sh && chmod +x /app/start.sh
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:5000/ || exit 1
 
 # Expose the port the app runs on
 EXPOSE 5000
 
 # Command to run the application
-CMD ["./start.sh"] 
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "2", "--worker-class", "gthread", "--timeout", "300", "--log-level", "debug", "app:app"] 

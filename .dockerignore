@@ -1,0 +1,29 @@
+# Large data files
+*.gpkg
+*.zip
+*.pdf
+
+# Python cache and virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Git
+.git
+.gitignore
+
+# IDE files
+.vscode/
+.idea/
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Logs and temporary files
+*.log
+*.tmp 
