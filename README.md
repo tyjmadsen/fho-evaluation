@@ -104,20 +104,27 @@ These files are automatically downloaded from Google Drive when you run `downloa
    source venv/bin/activate
    ```
 
-2. Install dependencies:
+2. Activate the virtual environment:
    ```bash
-   pip install -r requirements.txt
+   # On Windows
+   .\venv\Scripts\activate
+   # On macOS/Linux
+   source venv/bin/activate
    ```
 
-3. Download the data files:
+3. Install dependencies:
    ```bash
-   python download_data.py
+   pip install -r requirements.txt
    ```
 
 4. Run the application:
    ```bash
    python app.py
    ```
+
+5. Access the application:
+   - Open your web browser and navigate to `http://localhost:5000`
+   - The application will take a few minutes to load the data files initially
 
 ## Troubleshooting
 
