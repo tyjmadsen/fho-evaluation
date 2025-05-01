@@ -48,10 +48,6 @@ These files are automatically downloaded from Google Drive when you run `downloa
 1. Create a virtual environment:
    ```bash
    python -m venv venv
-   # On Windows:
-   venv\Scripts\activate
-   # On Unix/macOS:
-   source venv/bin/activate
    ```
 
 2. Activate the virtual environment:
@@ -81,10 +77,6 @@ These files are automatically downloaded from Google Drive when you run `downloa
 ### Prerequisites
 - Docker Desktop installed
 - At least 4GB of RAM available for Docker
-- The following data files in the project root:
-  - `fho_all.gpkg`
-  - `LSRs_flood_allYears.gpkg`
-  - `flood_warnings_all.gpkg`
 
 ### Running with Docker
 
@@ -109,22 +101,6 @@ The Docker setup includes:
 - Resource limits (2 CPUs, 4GB RAM)
 - Read-only volume mounts for data files
 - Health checks and automatic restarts
-
-### Troubleshooting
-
-If you encounter issues:
-1. Check Docker Desktop is running
-2. Verify data files are in the correct location
-3. Check Docker logs for errors:
-```bash
-docker-compose -f docker/docker-compose.yml logs
-```
-
-4. If the application fails to start:
-```bash
-docker-compose -f docker/docker-compose.yml down
-docker-compose -f docker/docker-compose.yml up --build
-```
 
 ## Troubleshooting
 
@@ -204,42 +180,4 @@ If you encounter any issues:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Running the Application
-
-### Option 1: Local Development
-1. Navigate to the project directory:
-   ```bash
-   cd fho-evaluation
-   ```
-
-2. Run the application:
-   ```bash
-   python app.py
-   ```
-
-3. Access the application:
-   Open your web browser and navigate to: http://localhost:5000
-
-### Option 2: Docker Deployment
-1. Navigate to the docker directory:
-   ```bash
-   cd docker
-   ```
-
-2. Build and run with Docker Compose:
-   ```bash
-   docker-compose up --build
-   ```
-
-3. Access the application:
-   Open your web browser and navigate to: http://localhost:5000
-
-### Notes
-- The application requires three data files that will be downloaded automatically when needed:
-  - `fho_all.gpkg` (~1.3GB)
-  - `LSRs_flood_allYears.gpkg` (~8.6MB)
-  - `flood_warnings_all.gpkg` (~11MB)
-- These files are not included in the repository due to their size
-- The download script will check if the files exist and download them if needed 
+This project is licensed under the MIT License - see the LICENSE file for details. 
