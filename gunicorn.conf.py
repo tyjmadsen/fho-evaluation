@@ -1,5 +1,8 @@
 import multiprocessing
 
+# Bind to all interfaces on port 5000
+bind = "0.0.0.0:5000"
+
 # Number of workers = (2 x CPU cores) + 1
 workers = (2 * multiprocessing.cpu_count()) + 1
 worker_class = 'gthread'

@@ -16,12 +16,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first to leverage Docker cache
+# Copy only requirements first to leverage Docker cache
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY . .
+# Copy only necessary application files
+COPY app.py .
+COPY templates/ templates/
+COPY static/ static/
+COPY gunicorn.conf.py .
 
 # Create a non-root user
 RUN useradd -m appuser && chown -R appuser:appuser /app

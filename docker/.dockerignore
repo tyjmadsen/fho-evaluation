@@ -1,3 +1,35 @@
+# Exclude large data files
+*.gpkg
+*.geojson
+*.shp
+*.dbf
+*.shx
+*.prj
+
+# Exclude Python cache and virtual environment
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+
+# Exclude IDE and system files
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Exclude git files
+.git/
+.gitignore
+
+# Exclude logs and temporary files
+*.log
+*.tmp
+*.temp
+
 # Version control
 .git
 .gitignore
@@ -10,8 +42,6 @@ __pycache__
 .Python
 .env
 .venv
-env/
-venv/
 ENV/
 
 # Development
@@ -32,7 +62,6 @@ test_*.py
 docs/
 
 # Large data files (these will be mounted as volumes)
-*.gpkg
 data/
 verification_maps/
 verification_stats/
