@@ -1,1 +1,852 @@
- 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FHO IBW Validation</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #64748b;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --background-color: #f8fafc;
+            --card-background: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--background-color);
+            color: var(--text-primary);
+        }
+
+        .app-header {
+            background-color: var(--card-background);
+            padding: 1.5rem 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 1000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .app-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s ease;
+        }
+
+        .nav-link:hover {
+            background-color: var(--background-color);
+            color: var(--primary-color);
+        }
+
+        .nav-link.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .controls-container {
+            background-color: var(--card-background);
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1.5rem;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: calc(100vh - 200px);
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            z-index: 1;
+        }
+
+        .stats-panel {
+            background-color: var(--card-background);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 1.5rem;
+            left: 1.5rem;
+            background-color: var(--card-background);
+            padding: 1rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            z-index: 1000;
+            display: grid;
+            grid-template-columns: repeat(2, minmax(160px, 1fr));
+            gap: 0.5rem;
+            max-width: 450px;
+            font-size: 0.8125rem;
+        }
+
+        .legend-section-title {
+            grid-column: 1 / -1;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.25rem;
+            margin-bottom: 0.25rem;
+            font-size: 0.875rem;
+            margin-top: 0.5rem;
+        }
+
+        .legend-section-title:first-child {
+            margin-top: 0;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            line-height: 1.2;
+            padding: 0.125rem 0;
+        }
+
+        .legend-color {
+            flex-shrink: 0;
+            width: 20px;
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255,255,255,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            backdrop-filter: blur(4px);
+        }
+
+        .leaflet-popup-content {
+            margin: 10px;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .warning-popup {
+            min-width: 200px;
+        }
+
+        .warning-popup .title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 8px;
+            color: #1e293b;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 4px;
+        }
+
+        .warning-popup .hit {
+            color: #b30000;
+            font-weight: 600;
+        }
+
+        .warning-popup .miss {
+            color: #6a0dad;
+            font-weight: 600;
+        }
+
+        .warning-popup .details {
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .warning-popup .label {
+            color: #64748b;
+            font-weight: 500;
+            display: inline-block;
+            width: 85px;
+        }
+
+        .warning-popup .value {
+            color: #1e293b;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <h1 class="app-title">FHO IBW Validation</h1>
+        <nav class="nav-links">
+            <a href="/" class="nav-link">FHO Verification</a>
+            <a href="/ibw-validation" class="nav-link active">IBW Validation</a>
+        </nav>
+    </header>
+
+    <div class="container-fluid py-4">
+        <div class="row">
+            <div class="col-md-3">
+                <div class="controls-container">
+                    <form id="filterForm">
+                        <div class="mb-3">
+                            <label for="quickSelect" class="form-label">Quick Select Events</label>
+                            <select class="form-select" id="quickSelect">
+                                <option value="">Select an Event</option>
+                                <optgroup label="Considerable FHO Events">
+                                    <!-- Will be populated dynamically -->
+                                </optgroup>
+                                <optgroup label="Catastrophic FHO Events">
+                                    <!-- Will be populated dynamically -->
+                                </optgroup>
+                                <optgroup label="High Impact FFWs (No FHO)">
+                                    <!-- Will be populated dynamically -->
+                                </optgroup>
+                            </select>
+                            <small class="form-text text-muted">Quickly jump to specific high-impact events</small>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Manual Selection</label>
+                            <div class="card p-2 bg-light">
+                                <div class="mb-2">
+                                    <label for="issuanceDate" class="form-label">FHO Issuance Date</label>
+                                    <input type="date" class="form-control" id="issuanceDate" required>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="issuance" class="form-label">Issuance Time</label>
+                                    <select class="form-select" id="issuance" required>
+                                        <option value="AM">AM</option>
+                                        <option value="PM">PM</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="forecastPeriod" class="form-label">Forecast Period</label>
+                                    <select class="form-select" id="forecastPeriod" required>
+                                        <option value="1-3">Days 1-3</option>
+                                        <option value="4-7">Days 4-7</option>
+                                        <option value="1-7">Days 1-7</option>
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label for="impactLevel" class="form-label">Impact Level</label>
+                                    <select class="form-select" id="impactLevel" required>
+                                        <option value="Considerable">Considerable</option>
+                                        <option value="Catastrophic">Catastrophic</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </form>
+                </div>
+
+                <div class="stats-panel">
+                    <h5 class="mb-3">Verification Statistics</h5>
+                    <div class="alert alert-info mb-3 small">
+                        Statistics below are calculated only for <strong><span id="impactLevelLabel">Considerable</span></strong> FFWs.
+                    </div>
+                    <div class="mb-2">
+                        <strong>POD:</strong> <span id="podValue">-</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Hits:</strong> <span id="hitsValue">-</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Misses:</strong> <span id="missesValue">-</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>FFWs with No Tag:</strong> <span id="noTagValue">-</span>
+                    </div>
+                    <div class="mb-2">
+                        <strong>Total FFWs:</strong> <span id="totalFfwsValue">-</span>
+                    </div>
+                </div>
+
+                <div class="alert alert-info mt-3" id="noFhoAlert" style="display: none;">
+                    <h6 class="alert-heading">No FHO Polygon Found</h6>
+                    <p class="mb-0">Showing FFWs with Considerable/Catastrophic tags for this period.</p>
+                </div>
+            </div>
+
+            <div class="col-md-9 position-relative">
+                <div id="map"></div>
+                <div class="legend">
+                    <div class="legend-container">
+                        <div class="legend-section-title">Flash Flood Warnings</div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.catastrophicHit.color}; height: 3px;"></div>
+                            <span>Catastrophic (Hit)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.catastrophicMiss.color}; border-width: 1px;"></div>
+                            <span>Catastrophic (Miss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.considerableHit.color}; height: 3px;"></div>
+                            <span>Considerable (Hit)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.considerableMiss.color}; border-width: 1px;"></div>
+                            <span>Considerable (Miss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.noTag.color}; height: 1px;"></div>
+                            <span>No Tag</span>
+                        </div>
+
+                        <div class="legend-section-title">FHO Forecast Areas</div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.fhoCatastrophic.color}; height: 2px;"></div>
+                            <span>Catastrophic</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.fhoConsiderable.color}; height: 2px;"></div>
+                            <span>Considerable</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.limited.color}; border-width: 1px;"></div>
+                            <span>Limited</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="loading-overlay">
+                    <div class="spinner-border" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // Initialize map
+        const map = L.map('map').setView([39.8283, -98.5795], 4);
+
+        // Set initial impact level label
+        document.getElementById('impactLevelLabel').textContent = document.getElementById('impactLevel').value;
+
+        // Create the base layers
+        const lightBaseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd',
+            maxZoom: 20,
+            minZoom: 0
+        }).addTo(map);
+
+        const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+            attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+            maxZoom: 20,
+            minZoom: 0
+        });
+
+        // Define base maps for layer control
+        const baseMaps = {
+            "Light": lightBaseMap,
+            "Satellite": satelliteLayer
+        };
+
+        // Add layer control
+        L.control.layers(baseMaps, null, {
+            position: 'bottomright'
+        }).addTo(map);
+
+        // Add zoom control to a better position
+        map.zoomControl.setPosition('bottomright');
+
+        // Style definitions
+        const styles = {
+            fhoConsiderable: {
+                color: '#f46d43',
+                weight: 4,
+                opacity: 0.8,
+                fillOpacity: 0.1,
+                fillColor: '#f46d43'
+            },
+            fhoCatastrophic: {
+                color: '#d73027',
+                weight: 4,
+                opacity: 0.8,
+                fillOpacity: 0.1,
+                fillColor: '#d73027'
+            },
+            limited: {
+                color: '#0000FF',
+                weight: 1,
+                opacity: 0.5,
+                fillOpacity: 0.03,
+                fillColor: '#0000FF',
+                dashArray: '5, 5'
+            },
+            catastrophicHit: {
+                color: '#b30000',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.4,
+                fillColor: '#b30000'
+            },
+            catastrophicMiss: {
+                color: '#6a0dad',
+                weight: 2,
+                opacity: 0.8,
+                fillOpacity: 0,
+                fillColor: 'transparent',
+                dashArray: '5, 5'
+            },
+            considerableHit: {
+                color: '#d94801',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.4,
+                fillColor: '#d94801'
+            },
+            considerableMiss: {
+                color: '#0066cc',
+                weight: 2,
+                opacity: 0.8,
+                fillOpacity: 0,
+                fillColor: 'transparent',
+                dashArray: '5, 5'
+            },
+            noTag: {
+                color: '#808080',
+                weight: 1,
+                opacity: 0.7,
+                fillOpacity: 0.1,
+                fillColor: '#808080'
+            }
+        };
+
+        // Layer groups
+        const layers = {
+            limited: L.layerGroup().addTo(map),      // Bottom layer
+            fho: L.layerGroup().addTo(map),          // FHO polygons
+            noTag: L.layerGroup().addTo(map),        // No tag FFWs
+            considerableLayers: L.layerGroup().addTo(map),  // Considerable FFWs
+            catastrophicLayers: L.layerGroup().addTo(map)   // Top layer - Catastrophic FFWs
+        };
+
+        // Load available dates
+        fetch('/api/available-dates')
+            .then(response => response.json())
+            .then(dates => {
+                const datePicker = document.getElementById('issuanceDate');
+                if (dates.length > 0) {
+                    datePicker.value = dates[dates.length - 1];
+                    updateMap();
+                }
+            });
+
+        // Load high-impact events for Quick Select
+        fetch('/api/high-impact-events')
+            .then(response => response.json())
+            .then(data => {
+                const quickSelect = document.getElementById('quickSelect');
+                const groups = quickSelect.getElementsByTagName('optgroup');
+                
+                // Clear existing options
+                for (let group of groups) {
+                    group.innerHTML = '';
+                }
+                
+                // Add Considerable FHO events
+                const considerableGroup = groups[0];
+                data.considerable_fho.forEach(event => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify(event);
+                    option.textContent = `${event.date} ${event.issuance} (Days ${event.period})`;
+                    considerableGroup.appendChild(option);
+                });
+                
+                // Add Catastrophic FHO events
+                const catastrophicGroup = groups[1];
+                data.catastrophic_fho.forEach(event => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify(event);
+                    option.textContent = `${event.date} ${event.issuance} (Days ${event.period})`;
+                    catastrophicGroup.appendChild(option);
+                });
+                
+                // Add High Impact FFWs with no FHO
+                const ffwGroup = groups[2];
+                data.high_impact_ffws.forEach(event => {
+                    const option = document.createElement('option');
+                    option.value = JSON.stringify(event);
+                    option.textContent = `${event.date} ${event.tag} FFW (${event.issued}-${event.expired})`;
+                    ffwGroup.appendChild(option);
+                });
+            });
+
+        // Event listeners
+        document.getElementById('issuanceDate').addEventListener('change', updateMap);
+        document.getElementById('issuance').addEventListener('change', updateMap);
+        document.getElementById('forecastPeriod').addEventListener('change', updateMap);
+        document.getElementById('impactLevel').addEventListener('change', function(e) {
+            // Update the impact level label in the message box
+            document.getElementById('impactLevelLabel').textContent = e.target.value;
+            updateMap();
+        });
+        document.getElementById('quickSelect').addEventListener('change', function(e) {
+            if (!e.target.value) return;
+            
+            try {
+                const event = JSON.parse(e.target.value);
+                console.log('Selected event:', event);
+                
+                // Set the date
+                if (event.date) {
+                    document.getElementById('issuanceDate').value = event.date;
+                }
+                
+                // If it's an FHO event (has issuance property)
+                if (event.issuance) {
+                    // Set issuance time
+                    document.getElementById('issuance').value = event.issuance.toUpperCase();
+                    
+                    // Set forecast period if available
+                    if (event.period) {
+                        document.getElementById('forecastPeriod').value = event.period;
+                    }
+                    
+                    // Set impact level based on the group
+                    const selectedGroup = e.target.selectedOptions[0].parentElement.label;
+                    if (selectedGroup.includes('Considerable')) {
+                        document.getElementById('impactLevel').value = 'Considerable';
+                        document.getElementById('impactLevelLabel').textContent = 'Considerable';
+                    } else if (selectedGroup.includes('Catastrophic')) {
+                        document.getElementById('impactLevel').value = 'Catastrophic';
+                        document.getElementById('impactLevelLabel').textContent = 'Catastrophic';
+                    }
+                    
+                    // Hide the no FHO alert
+                    document.getElementById('noFhoAlert').style.display = 'none';
+                } 
+                // If it's an FFW event (has tag property)
+                else if (event.tag) {
+                    // Show the no FHO alert
+                    document.getElementById('noFhoAlert').style.display = 'block';
+                }
+                
+                // Update the map
+                updateMap();
+            } catch (error) {
+                console.error('Error handling Quick Select change:', error);
+                alert('Failed to load selected event. Please try again.');
+            }
+        });
+
+        function updateMap() {
+            const loadingOverlay = document.querySelector('.loading-overlay');
+            loadingOverlay.style.display = 'flex';
+
+            // Clear existing layers
+            Object.values(layers).forEach(layer => layer.clearLayers());
+
+            // Get form values
+            const filters = {
+                issuance_date: document.getElementById('issuanceDate').value,
+                issuance: document.getElementById('issuance').value,
+                forecast_period: document.getElementById('forecastPeriod').value,
+                impact_level: document.getElementById('impactLevel').value
+            };
+
+            // Helper function to safely add GeoJSON layers
+            function safeAddGeoJSON(geojsonData, layer, style, layerType) {
+                if (!geojsonData) return null;
+                
+                let geoJSONLayer = null;
+                
+                // Handle single Feature
+                if (geojsonData.type === 'Feature') {
+                    geoJSONLayer = L.geoJSON(geojsonData, {
+                        style: style,
+                        onEachFeature: (feature, layer) => {
+                            if (!feature.properties) feature.properties = {};
+                            feature.properties.type = layerType;
+                            addPopup(feature, layer);
+                        }
+                    }).addTo(layer);
+                }
+                // Handle FeatureCollection
+                else if (geojsonData.type === 'FeatureCollection' && geojsonData.features && geojsonData.features.length > 0) {
+                    geoJSONLayer = L.geoJSON(geojsonData, {
+                        style: feature => {
+                            // Check for FFW damage tag
+                            if (feature.properties && feature.properties.DAMAGTAG) {
+                                if (feature.properties.DAMAGTAG === 'CATASTROPHIC') {
+                                    return layerType === 'Hit' ? styles.catastrophicHit : styles.catastrophicMiss;
+                                } else if (feature.properties.DAMAGTAG === 'CONSIDERABLE') {
+                                    return layerType === 'Hit' ? styles.considerableHit : styles.considerableMiss;
+                                }
+                            }
+                            // If it's a Limited FHO polygon
+                            if (feature.properties && feature.properties.type === 'Limited') {
+                                return styles.limited;
+                            }
+                            return style;
+                        },
+                        onEachFeature: (feature, layer) => {
+                            if (!feature.properties) feature.properties = {};
+                            // If not already set, set the type from layerType
+                            if (!feature.properties.type) {
+                                feature.properties.type = layerType;
+                            }
+                            addPopup(feature, layer);
+                        }
+                    }).addTo(layer);
+                }
+                
+                return geoJSONLayer;
+            }
+
+            // Fetch data
+            fetch('/api/ibw-stats', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(filters)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                // Update statistics
+                if (data.statistics) {
+                    document.getElementById('podValue').textContent = (data.statistics.pod * 100).toFixed(2) + '%';
+                    document.getElementById('hitsValue').textContent = data.statistics.hits;
+                    document.getElementById('missesValue').textContent = data.statistics.misses;
+                    document.getElementById('noTagValue').textContent = data.statistics.ffws_no_tag;
+                    document.getElementById('totalFfwsValue').textContent = data.statistics.total_ffws;
+                }
+
+                // Add geometries to map if they exist
+                if (data.geometries) {
+                    let bounds = null;
+
+                    // Clear existing layers in reverse order (to maintain z-index)
+                    Object.values(layers).reverse().forEach(layer => layer.clearLayers());
+                    
+                    // Add layers in specific order (bottom to top)
+                    const addedLayers = [
+                        // Base layers (bottom)
+                        safeAddGeoJSON(data.geometries.limited, layers.limited, styles.limited, 'Limited'),
+                        // Add both Considerable and Catastrophic FHO polygons if they exist
+                        safeAddGeoJSON(data.geometries.fho_considerable, layers.fho, styles.fhoConsiderable, 'Considerable'),
+                        safeAddGeoJSON(data.geometries.fho_catastrophic, layers.fho, styles.fhoCatastrophic, 'Catastrophic'),
+                        
+                        // FFWs by priority (top)
+                        safeAddGeoJSON(data.geometries.no_tag, layers.noTag, styles.noTag, 'NoTag'),
+                        safeAddGeoJSON(data.geometries.other_impact, layers.considerableLayers, null, 'OtherImpact')
+                    ];
+
+                    // Handle FFWs by impact level
+                    if (data.geometries.misses?.features) {
+                        // Add Considerable Misses first (bottom layer)
+                        const considerableMisses = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+                        };
+                        safeAddGeoJSON(considerableMisses, layers.considerableLayers, styles.considerableMiss, 'Miss');
+
+                        // Add Catastrophic Misses on top
+                        const catastrophicMisses = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+                        };
+                        safeAddGeoJSON(catastrophicMisses, layers.catastrophicLayers, styles.catastrophicMiss, 'Miss');
+                    }
+
+                    if (data.geometries.hits?.features) {
+                        // Add Considerable Hits first (bottom layer)
+                        const considerableHits = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+                        };
+                        safeAddGeoJSON(considerableHits, layers.considerableLayers, styles.considerableHit, 'Hit');
+
+                        // Add Catastrophic Hits on top
+                        const catastrophicHits = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+                        };
+                        safeAddGeoJSON(catastrophicHits, layers.catastrophicLayers, styles.catastrophicHit, 'Hit');
+                    }
+
+                    if (data.geometries.other_impact?.features) {
+                        // Add Considerable Other Impact first (bottom layer)
+                        const considerableOther = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+                        };
+                        safeAddGeoJSON(considerableOther, layers.considerableLayers, styles.considerableHit, 'OtherImpact');
+
+                        // Add Catastrophic Other Impact on top
+                        const catastrophicOther = {
+                            type: 'FeatureCollection',
+                            features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+                        };
+                        safeAddGeoJSON(catastrophicOther, layers.catastrophicLayers, styles.catastrophicHit, 'OtherImpact');
+                    }
+
+                    // Update legend to reflect hierarchy
+                    const legend = document.querySelector('.legend');
+                    legend.innerHTML = `
+                        <div class="legend-section-title">Flash Flood Warnings</div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.catastrophicHit.color}; height: 3px;"></div>
+                            <span>Catastrophic (Hit)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.catastrophicMiss.color}; border-width: 1px;"></div>
+                            <span>Catastrophic (Miss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.considerableHit.color}; height: 3px;"></div>
+                            <span>Considerable (Hit)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.considerableMiss.color}; border-width: 1px;"></div>
+                            <span>Considerable (Miss)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.noTag.color}; height: 1px;"></div>
+                            <span>No Tag</span>
+                        </div>
+
+                        <div class="legend-section-title">FHO Forecast Areas</div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.fhoCatastrophic.color}; height: 2px;"></div>
+                            <span>Catastrophic</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: ${styles.fhoConsiderable.color}; height: 2px;"></div>
+                            <span>Considerable</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: transparent; height: 2px; border-style: dashed; border-color: ${styles.limited.color}; border-width: 1px;"></div>
+                            <span>Limited</span>
+                        </div>
+                    `;
+
+                    // Collect valid bounds
+                    addedLayers.forEach(layer => {
+                        if (layer && typeof layer.getBounds === 'function') {
+                            const layerBounds = layer.getBounds();
+                            if (layerBounds && layerBounds.isValid()) {
+                                if (!bounds) {
+                                    bounds = layerBounds;
+                                } else {
+                                    bounds.extend(layerBounds);
+                                }
+                            }
+                        }
+                    });
+
+                    // Fit map to bounds if we have valid bounds
+                    if (bounds && bounds.isValid()) {
+                        map.fitBounds(bounds);
+                    } else {
+                        // If no valid bounds, reset to CONUS view
+                        map.setView([39.8283, -98.5795], 4);
+                    }
+                } else {
+                    // If no geometries, reset to CONUS view
+                    map.setView([39.8283, -98.5795], 4);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error loading data: ' + error.message);
+                // Reset to CONUS view on error
+                map.setView([39.8283, -98.5795], 4);
+            })
+            .finally(() => {
+                loadingOverlay.style.display = 'none';
+            });
+        }
+
+        function addPopup(feature, layer) {
+            if (!feature.properties) return;
+
+            let content = '';
+            
+            // FHO polygon popup (for Considerable/Catastrophic/Limited)
+            if (feature.properties.type === 'Considerable' || 
+                feature.properties.type === 'Catastrophic' || 
+                feature.properties.type === 'Limited') {
+                const issuanceTime = document.getElementById('issuance').value;
+                content = `
+                    <div class="warning-popup">
+                        <div class="title">FHO Forecast Area</div>
+                        <div class="details">
+                            <div><span class="label">Impact Level:</span> <span class="value">${feature.properties.type}</span></div>
+                            <div><span class="label">Date:</span> <span class="value">${document.getElementById('issuanceDate').value}</span></div>
+                            <div><span class="label">Time:</span> <span class="value">${issuanceTime}</span></div>
+                            <div><span class="label">Period:</span> <span class="value">Days ${document.getElementById('forecastPeriod').value}</span></div>
+                        </div>
+                    </div>
+                `;
+            }
+            // FFW popup
+            else if (feature.properties.popup_content || feature.properties.DAMAGTAG) {
+                if (feature.properties.popup_content) {
+                    content = feature.properties.popup_content;
+                } else {
+                    const verificationStatus = feature.properties.type === 'Hit' ? 
+                        '<span class="hit">[HIT]</span>' : 
+                        '<span class="miss">[MISS]</span>';
+                    
+                    content = `
+                        <div class="warning-popup">
+                            <div class="title">
+                                Flash Flood Warning Details ${verificationStatus}
+                            </div>
+                            <div class="details">
+                                <div><span class="label">Impact:</span> <span class="value">${feature.properties.DAMAGTAG || 'No Tag'}</span></div>
+                                <div><span class="label">Issued:</span> <span class="value">${feature.properties.ISSUED || 'Unknown'}</span></div>
+                                <div><span class="label">Expired:</span> <span class="value">${feature.properties.EXPIRED || 'Unknown'}</span></div>
+                            </div>
+                        </div>`;
+                }
+            }
+
+            if (content) {
+                layer.bindPopup(content);
+            }
+        }
+
+        // Initial map update
+        updateMap();
+    </script>
+</body>
+</html> 
