@@ -1,14 +1,14 @@
-version: '3.8'
-
 services:
   web:
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     ports:
       - "5000:5000"
     volumes:
-      - ./fho_all.gpkg:/app/fho_all.gpkg
-      - ./LSRs_flood_allYears.gpkg:/app/LSRs_flood_allYears.gpkg
-      - ./flood_warnings_all.gpkg:/app/flood_warnings_all.gpkg
+      - ../fho_all.gpkg:/app/fho_all.gpkg
+      - ../LSRs_flood_allYears.gpkg:/app/LSRs_flood_allYears.gpkg
+      - ../flood_warnings_all.gpkg:/app/flood_warnings_all.gpkg
     environment:
       - FLASK_ENV=development
       - FLASK_APP=app.py

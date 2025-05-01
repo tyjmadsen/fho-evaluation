@@ -51,6 +51,7 @@ A web application for validating Impact-Based Warning (IBW) forecasts against Fl
 
 4. Build and run with Docker Compose:
    ```bash
+   cd docker
    docker-compose up --build
    ```
 
@@ -63,18 +64,18 @@ A web application for validating Impact-Based Warning (IBW) forecasts against Fl
 
 1. Port Configuration:
    - Default port is 5000
-   - To change the port, modify `docker-compose.yml`:
+   - To change the port, modify `docker/docker-compose.yml`:
      ```yaml
      ports:
        - "YOUR_PORT:5000"
      ```
 
 2. Volume Mounts:
-   - Data files are mounted from the host system
+   - Data files are mounted from the parent directory
    - Ensure data files are in the correct location before building
 
 3. Environment Variables:
-   - Set in `docker-compose.yml` or use a `.env` file
+   - Set in `docker/docker-compose.yml` or use a `.env` file
    - Available variables:
      - `FLASK_ENV`: Set to `production` or `development`
      - `PORT`: Application port (default: 5000)
@@ -85,7 +86,7 @@ For production deployment, additional steps are recommended:
 
 1. Use a production-ready web server:
    ```dockerfile
-   # In Dockerfile
+   # In docker/Dockerfile
    RUN pip install gunicorn
    CMD ["gunicorn", "--bind", "0.0.0.0:5000", "app:app"]
    ```
@@ -96,8 +97,7 @@ For production deployment, additional steps are recommended:
 
 3. Set secure configurations:
    ```yaml
-   # docker-compose.prod.yml
-   version: '3.8'
+   # docker/docker-compose.prod.yml
    services:
      web:
        environment:
@@ -166,7 +166,7 @@ These files are automatically downloaded from Google Drive when you run `downloa
    - Error: "Port 5000 is already in use"
    - Solution: 
      - Stop other services using port 5000
-     - Modify port in docker-compose.yml
+     - Modify port in docker/docker-compose.yml
      - Or run with different port: `docker-compose up -p 5001:5000`
 
 3. **Docker Memory Issues**
@@ -250,12 +250,17 @@ This project is licensed under the MIT License - see the LICENSE file for detail
    Open your web browser and navigate to: http://localhost:5000
 
 ### Option 2: Docker Deployment
-1. Build and run with Docker Compose:
+1. Navigate to the docker directory:
+   ```bash
+   cd docker
+   ```
+
+2. Build and run with Docker Compose:
    ```bash
    docker-compose up --build
    ```
 
-2. Access the application:
+3. Access the application:
    Open your web browser and navigate to: http://localhost:5000
 
 ### Notes

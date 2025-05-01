@@ -19,7 +19,7 @@ ENV FLASK_ENV=development
 ENV GUNICORN_CMD_ARGS="--timeout 300 --workers 2 --threads 2 --worker-class gthread"
 
 # Copy requirements first to leverage Docker cache
-COPY requirements.txt .
+COPY ../requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
@@ -28,9 +28,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN mkdir -p /app/static /app/templates
 
 # Copy only the essential application files
-COPY app.py .
-COPY static/ ./static/
-COPY templates/ ./templates/
+COPY ../app.py .
+COPY ../static/ ./static/
+COPY ../templates/ ./templates/
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
