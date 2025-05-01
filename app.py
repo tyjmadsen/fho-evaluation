@@ -92,7 +92,7 @@ def get_date_range(issuance_time, forecast_period, fho_issuance_date):
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('fho_evaluation.html')
 
 @app.route('/api/available-dates', methods=['GET'])
 def get_available_dates():

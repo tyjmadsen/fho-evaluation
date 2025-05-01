@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FHO Verification</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #64748b;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --background-color: #f8fafc;
+            --card-background: #ffffff;
+            --text-primary: #1e293b;
+            --text-secondary: #64748b;
+            --border-color: #e2e8f0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--background-color);
+            color: var(--text-primary);
+        }
+
+        .app-header {
+            background-color: var(--card-background);
+            padding: 1.5rem 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            position: relative;
+            z-index: 1000;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .app-title {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .controls-container {
+            background-color: var(--card-background);
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1.5rem;
+        }
+
+        .form-control {
+            border: 1px solid var(--border-color);
+            border-radius: 0.5rem;
+            padding: 0.625rem;
+            transition: all 0.2s ease;
+        }
+
+        .form-control:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        .form-label {
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 0.5rem;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: calc(100vh - 200px);
+            border-radius: 0.75rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            z-index: 1;
+        }
+
+        .stats-panel {
+            background-color: var(--card-background);
+            border-radius: 0.75rem;
+            padding: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-bottom: 1rem;
+        }
+
+        .pod-badge {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+
+        .pod-badge .metric-value {
+            font-size: 1.5rem;
+            line-height: 1.2;
+            margin: 0;
+        }
+
+        .pod-badge .metric-label {
+            font-size: 0.75rem;
+            margin: 0;
+        }
+
+        .hits-misses-compact .metric-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin: 0;
+            line-height: 1.2;
+        }
+
+        .hits-misses-compact .metric-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin: 0;
+        }
+
+        .pod-threshold-compact {
+            background-color: var(--background-color);
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+        }
+
+        .ultra-compact {
+            background-color: var(--background-color);
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+        }
+
+        .verification-stats {
+            font-size: 0.875rem;
+        }
+
+        .legend {
+            position: absolute;
+            bottom: 1.5rem;
+            right: 1.5rem;
+            background-color: var(--card-background);
+            padding: 1rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1);
+            z-index: 1000;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            padding: 0.375rem 0;
+            font-size: 0.875rem;
+            color: var(--text-primary);
+            transition: opacity 0.2s ease;
+        }
+
+        .legend-item:hover {
+            opacity: 0.8;
+        }
+
+        .legend-color {
+            width: 1.25rem;
+            height: 1.25rem;
+            margin-right: 0.75rem;
+            border-radius: 0.25rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255,255,255,0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 2000;
+            backdrop-filter: blur(4px);
+        }
+
+        .lsr-miss-marker {
+            color: #cc0000;
+            font-size: 12px;
+            font-weight: bold;
+            text-align: center;
+            line-height: 12px;
+            text-shadow: 1px 1px 1px rgba(0,0,0,0.5);
+            margin-left: -6px;
+            margin-top: -6px;
+        }
+
+        .spinner-border {
+            width: 3rem;
+            height: 3rem;
+            color: var(--primary-color);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .metric-card {
+            background-color: var(--card-background);
+            border-radius: 0.75rem;
+            padding: 1.25rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--primary-color);
+            margin-bottom: 0.25rem;
+        }
+
+        .metric-label {
+            font-size: 0.875rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .legend-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+        }
+        
+        .legend-column {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            font-size: 0.75rem;
+            white-space: nowrap;
+        }
+        
+        .legend-color {
+            width: 0.75rem;
+            height: 0.75rem;
+            margin-right: 0.25rem;
+            border-radius: 0.125rem;
+            flex-shrink: 0;
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 1rem;
+        }
+
+        .nav-link {
+            color: var(--text-secondary);
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 0.5rem;
+            transition: all 0.2s ease;
+        }
+
+        .nav-link:hover {
+            background-color: var(--background-color);
+            color: var(--primary-color);
+        }
+
+        .nav-link.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        @media (max-width: 768px) {
+            .app-header {
+                padding: 1rem;
+            }
+
+            .controls-container {
+                margin: 1rem;
+            }
+
+            #map {
+                height: calc(100vh - 300px);
+            }
+
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .verification-stats {
+                flex-direction: column;
+            }
+
+            .legend-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <h1 class="app-title">FHO Evaluation Dashboard</h1>
+        <nav class="nav-links">
+            <a href="/" class="nav-link active">FHO Verification</a>
+            <a href="/ibw-validation" class="nav-link">IBW Validation</a>
+        </nav>
+    </header>
+
+    <div class="container-fluid py-4">
+        <div class="controls-container">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="issuanceDate" class="form-label">FHO Issuance Date</label>
+                        <select class="form-control" id="issuanceDate">
+                            <option value="">Select Date</option>
+                        </select>
+                        <small class="form-text text-muted">Date of FHO issuance for mapping</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="issuance" class="form-label">Issuance</label>
+                        <select class="form-control" id="issuance">
+                            <option value="">Select Issuance</option>
+                            <option value="00Z">AM</option>
+                            <option value="12Z">PM</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="forecastPeriod" class="form-label">Forecast Period</label>
+                        <select class="form-control" id="forecastPeriod">
+                            <option value="">Select Period</option>
+                            <option value="1-3">Days 1-3</option>
+                            <option value="4-7">Days 4-7</option>
+                            <option value="1-7">Days 1-7</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="endDate" class="form-label">End Date Stats Calculation</label>
+                        <select class="form-control" id="endDate">
+                            <option value="">Select End Date</option>
+                        </select>
+                        <small class="form-text text-muted">End date for cumulative statistics</small>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="form-group">
+                        <label for="podThreshold" class="form-label">POD Threshold Analysis</label>
+                        <select class="form-control" id="podThreshold">
+                            <option value="0.1">POD ≥ 0.1 (10%)</option>
+                            <option value="0.15">POD ≥ 0.15 (15%)</option>
+                            <option value="0.2">POD ≥ 0.2 (20%)</option>
+                            <option value="0.25">POD ≥ 0.25 (25%)</option>
+                            <option value="0.3">POD ≥ 0.3 (30%)</option>
+                            <option value="0.35">POD ≥ 0.35 (35%)</option>
+                            <option value="0.4">POD ≥ 0.4 (40%)</option>
+                            <option value="0.45">POD ≥ 0.45 (45%)</option>
+                            <option value="0.5">POD ≥ 0.5 (50%)</option>
+                            <option value="0.55">POD ≥ 0.55 (55%)</option>
+                            <option value="0.6">POD ≥ 0.6 (60%)</option>
+                            <option value="0.65">POD ≥ 0.65 (65%)</option>
+                            <option value="0.7" selected>POD ≥ 0.7 (70%)</option>
+                            <option value="0.75">POD ≥ 0.75 (75%)</option>
+                            <option value="0.8">POD ≥ 0.8 (80%)</option>
+                            <option value="0.85">POD ≥ 0.85 (85%)</option>
+                            <option value="0.9">POD ≥ 0.9 (90%)</option>
+                            <option value="0.95">POD ≥ 0.95 (95%)</option>
+                            <option value="0.99">POD ≥ 0.99 (99%)</option>
+                        </select>
+                        <small class="form-text text-muted">Analyze polygons meeting POD threshold</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-4">
+            <div class="col-lg-8">
+                <div id="map"></div>
+            </div>
+            <div class="col-lg-4">
+                <div class="stats-panel">
+                    <div class="stats-header d-flex justify-content-between align-items-center mb-2">
+                        <h5 class="mb-0">Statistics Overview</h5>
+                        <div class="pod-badge">
+                            <span class="metric-value" id="pod">-</span>
+                            <span class="metric-label">POD</span>
+                        </div>
+                    </div>
+
+                    <div class="stats-summary d-flex justify-content-between mb-2">
+                        <div class="hits-misses-compact">
+                            <div class="d-flex gap-4">
+                                <div>
+                                    <div class="metric-value" id="totalHits">-</div>
+                                    <div class="metric-label">Hits</div>
+                                </div>
+                                <div>
+                                    <div class="metric-value" id="totalMisses">-</div>
+                                    <div class="metric-label">Misses</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pod-threshold-compact mb-2">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="fw-bold small" id="podThresholdLabel">POD ≥ 0.7</span>
+                            <span class="badge bg-primary" id="podThresholdPercent">-%</span>
+                        </div>
+                        <div class="progress" style="height: 6px;">
+                            <div class="progress-bar bg-primary" id="podThresholdProgress" role="progressbar" style="width: 0%" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <div class="d-flex justify-content-between text-muted small">
+                            <span>Meeting: <span id="podThresholdCount">-</span></span>
+                            <span>Total: <span id="podTotalCount">-</span></span>
+                        </div>
+                    </div>
+
+                    <div class="verification-stats d-flex gap-2">
+                        <div class="flex-grow-1">
+                            <div class="ultra-compact">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="small fw-bold">LSR</span>
+                                    <div class="d-flex gap-3">
+                                        <span class="small">H: <span id="lsrHits">-</span></span>
+                                        <span class="small">M: <span id="lsrMisses">-</span></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex-grow-1">
+                            <div class="ultra-compact">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <span class="small fw-bold">FFW</span>
+                                    <div class="d-flex gap-3">
+                                        <span class="small">H: <span id="ffwHits">-</span></span>
+                                        <span class="small">M: <span id="ffwMisses">-</span></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metric-card mt-3">
+                    <h6 class="mb-2 small">Map Legend</h6>
+                    <div class="legend-grid">
+                        <div class="legend-column">
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #1a9850"></span>
+                                <span>LSR Hit</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #cc0000"></span>
+                                <span>LSR Miss</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #000000"></span>
+                                <span>FHO Area</span>
+                            </div>
+                        </div>
+                        <div class="legend-column">
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #4575b4"></span>
+                                <span>FFW Hit</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #ff9900"></span>
+                                <span>FFW Miss</span>
+                            </div>
+                        </div>
+                        <div class="legend-column">
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #d73027"></span>
+                                <span>FFW (Cat)</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color" style="background-color: #f46d43"></span>
+                                <span>FFW (Con)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metric-card mt-4" data-bs-toggle="tooltip" data-bs-placement="top" title="Time period covered by the selected forecast">
+                    <h6 class="mb-3">Time Period</h6>
+                    <div><strong>Total Days:</strong> <span id="totalDays">-</span></div>
+                    <div><strong>Days Included:</strong> <span id="daysIncluded">-</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="loading-overlay">
+        <div class="spinner-border" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html> 
