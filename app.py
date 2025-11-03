@@ -121,7 +121,12 @@ def load_data():
 fho_areas, lsrs, ffws = load_data()
 
 def get_date_range(issuance_time, forecast_period, fho_issuance_date):
-    """Get the date range for a given forecast period based on FHO issuance date."""
+    """Get the date range for a given forecast period based on FHO issuance date.
+    
+    All times are in UTC to match the FHO data and verification data.
+    - AM issuance: 12:00 UTC (7 AM CDT / 6 AM CST)
+    - PM issuance: 21:00 UTC (4 PM CDT / 3 PM CST)
+    """
     if forecast_period == "1-3":
         start_days = 0  # Start from issuance day
         end_days = 3
@@ -134,17 +139,17 @@ def get_date_range(issuance_time, forecast_period, fho_issuance_date):
     else:
         return None, None
     
-    # Adjust for AM/PM issuance
+    # Use UTC times to match FHO data
     if issuance_time.lower() == "am":
-        # AM issuance at 8 AM EDT
-        start_time = datetime.strptime("08:00:00", "%H:%M:%S").time()
-        end_time = datetime.strptime("08:00:00", "%H:%M:%S").time()
+        # AM issuance at 12:00 UTC (7 AM CDT / 6 AM CST)
+        start_time = datetime.strptime("12:00:00", "%H:%M:%S").time()
+        end_time = datetime.strptime("12:00:00", "%H:%M:%S").time()
     else:  # PM issuance
-        # PM issuance at 6 PM EDT
-        start_time = datetime.strptime("18:00:00", "%H:%M:%S").time()
-        end_time = datetime.strptime("18:00:00", "%H:%M:%S").time()
+        # PM issuance at 21:00 UTC (4 PM CDT / 3 PM CST)
+        start_time = datetime.strptime("21:00:00", "%H:%M:%S").time()
+        end_time = datetime.strptime("21:00:00", "%H:%M:%S").time()
     
-    # Calculate start and end dates with exact times
+    # Calculate start and end dates with exact times in UTC
     start_date = datetime.combine(fho_issuance_date + timedelta(days=start_days), start_time)
     end_date = datetime.combine(fho_issuance_date + timedelta(days=end_days), end_time)
     
