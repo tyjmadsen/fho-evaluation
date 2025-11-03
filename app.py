@@ -673,20 +673,22 @@ def get_ibw_stats():
 def get_high_impact_events():
     """Get dates with Considerable/Catastrophic FHO polygons or FFWs."""
     try:
-        # Get dates with Considerable FHO polygons
-        considerable_dates = fho_areas[
-            (fho_areas['impact_level'] == 'Considerable')
-        ].apply(lambda x: {
-            'date': pd.to_datetime(x['valid_start']).strftime('%Y-%m-%d'),
+        # Get dates with Considerable FHO polygons (unique combinations only)
+        considerable_fho = fho_areas[fho_areas['impact_level'] == 'Considerable'].copy()
+        considerable_fho['date'] = pd.to_datetime(considerable_fho['valid_start']).dt.strftime('%Y-%m-%d')
+        considerable_unique = considerable_fho[['date', 'issuance_time', 'forecast_period']].drop_duplicates()
+        considerable_dates = considerable_unique.apply(lambda x: {
+            'date': x['date'],
             'issuance': x['issuance_time'],
             'period': x['forecast_period']
         }, axis=1).tolist()
 
-        # Get dates with Catastrophic FHO polygons
-        catastrophic_dates = fho_areas[
-            (fho_areas['impact_level'] == 'Catastrophic')
-        ].apply(lambda x: {
-            'date': pd.to_datetime(x['valid_start']).strftime('%Y-%m-%d'),
+        # Get dates with Catastrophic FHO polygons (unique combinations only)
+        catastrophic_fho = fho_areas[fho_areas['impact_level'] == 'Catastrophic'].copy()
+        catastrophic_fho['date'] = pd.to_datetime(catastrophic_fho['valid_start']).dt.strftime('%Y-%m-%d')
+        catastrophic_unique = catastrophic_fho[['date', 'issuance_time', 'forecast_period']].drop_duplicates()
+        catastrophic_dates = catastrophic_unique.apply(lambda x: {
+            'date': x['date'],
             'issuance': x['issuance_time'],
             'period': x['forecast_period']
         }, axis=1).tolist()
