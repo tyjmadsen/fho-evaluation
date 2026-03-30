@@ -12,21 +12,25 @@ Usage:
 """
 
 import argparse
+import builtins
 import hashlib
 import io
 import json
 import logging
 import os
+import sqlite3
 import re
 import shutil
 import sys
 import tempfile
 import threading
 import time
+import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from glob import glob
+from pathlib import Path
 import fiona
 import geopandas as gpd
 import numpy as np
@@ -39,18 +43,48 @@ except ImportError:
     _unary_union = None
 from tqdm import tqdm
 
+# Serialize terminal output: FHO / LSR / WWA run in parallel threads; tqdm (stderr) and print
+# (stdout) must share one lock or progress bars and tables garble each other.
+_IO_LOCK = threading.RLock()
+tqdm.set_lock(_IO_LOCK)
+
+
+def _safe_print(*args, **kwargs):
+    with _IO_LOCK:
+        builtins.print(*args, **kwargs)
+
+
+class _LockingStreamHandler(logging.StreamHandler):
+    """So log.info lines don't splice into tqdm / _safe_print on the same terminal."""
+
+    def emit(self, record):
+        try:
+            with _IO_LOCK:
+                super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+
+def _configure_logging():
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(logging.INFO)
+    h = _LockingStreamHandler(sys.stdout)
+    h.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root.addHandler(h)
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+_configure_logging()
 log = logging.getLogger(__name__)
 
 # Detect non-TTY environments (Spyder IPython console, redirected output, etc.)
-# tqdm progress bars don't render correctly there — we use periodic print() instead.
+# tqdm progress bars don't render correctly there — we use periodic _safe_print() instead.
 _NO_TTY = not sys.stdout.isatty()
 
 # Suppress SSL warnings (NWC server uses self-signed certs)
@@ -163,8 +197,8 @@ def http_get(url, *, stream=False, timeout=60):
     return None
 
 
-def http_download_to_file(url, dest_path, *, timeout=300, desc=None):
-    """Stream a large file to disk with a tqdm progress bar. Returns True on success."""
+def http_download_to_file(url, dest_path, *, timeout=300, desc=None, progress=True):
+    """Stream a large file to disk. Optionally show a tqdm byte bar (single-threaded use only)."""
     session = _get_session()
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -173,14 +207,22 @@ def http_download_to_file(url, dest_path, *, timeout=300, desc=None):
                 return False
             r.raise_for_status()
             total = int(r.headers.get("content-length", 0))
-            with open(dest_path, "wb") as f, tqdm(
-                total=total, unit="B", unit_scale=True, unit_divisor=1024,
-                desc=desc or os.path.basename(dest_path),
-                disable=_NO_TTY or total == 0,
-            ) as pbar:
-                for chunk in r.iter_content(chunk_size=1024 * 256):
-                    f.write(chunk)
-                    pbar.update(len(chunk))
+            use_bar = progress and not _NO_TTY and total > 0
+            if not use_bar and progress and desc:
+                log.info("Downloading %s …", desc)
+            with open(dest_path, "wb") as f:
+                if use_bar:
+                    with tqdm(
+                        total=total, unit="B", unit_scale=True, unit_divisor=1024,
+                        desc=desc or os.path.basename(dest_path),
+                        file=sys.stdout,
+                    ) as pbar:
+                        for chunk in r.iter_content(chunk_size=1024 * 256):
+                            f.write(chunk)
+                            pbar.update(len(chunk))
+                else:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        f.write(chunk)
             return True
         except requests.RequestException as exc:
             if attempt == MAX_RETRIES:
@@ -240,6 +282,178 @@ def _state_has_data(state):
     return (bool(state.get("fho_last_date")) or
             bool(state.get("lsr_last_date")) or
             bool(state.get("wwa_years_done")))
+
+
+def _gpkg_connect_ro(path):
+    uri = Path(path).resolve().as_uri() + "?mode=ro"
+    return sqlite3.connect(uri, uri=True)
+
+
+def _gpkg_feature_tables(conn):
+    try:
+        cur = conn.execute(
+            "SELECT table_name FROM gpkg_contents WHERE data_type = 'features'"
+        )
+        return [r[0] for r in cur.fetchall()]
+    except sqlite3.Error:
+        return []
+
+
+def _scalar_to_date(val):
+    if val is None:
+        return None
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    if isinstance(val, datetime):
+        return val.date()
+    dt = pd.to_datetime(val, errors="coerce", utc=True)
+    if pd.isna(dt):
+        return None
+    if getattr(dt, "tzinfo", None) is not None:
+        dt = dt.tz_convert(None)
+    return dt.date()
+
+
+def _gpkg_max_in_layer(conn, layer, column):
+    try:
+        cur = conn.execute(f'SELECT MAX("{column}") FROM "{layer}"')
+        row = cur.fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    return _scalar_to_date(row[0])
+
+
+def _gpkg_wwa_latest_issued(gpkg_path, years):
+    if not gpkg_path or not os.path.exists(gpkg_path):
+        return None
+    year_set = set(years)
+    try:
+        conn = _gpkg_connect_ro(gpkg_path)
+    except sqlite3.Error:
+        return None
+    try:
+        best = None
+        for lyr in _gpkg_feature_tables(conn):
+            if not lyr.startswith("wwa_"):
+                continue
+            try:
+                y = int(lyr.split("_", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            if y not in year_set:
+                continue
+            d = _gpkg_max_in_layer(conn, lyr, "ISSUED")
+            if d is not None and (best is None or d > best):
+                best = d
+        return best
+    finally:
+        conn.close()
+
+
+def _gpkg_fho_latest_issuance(gpkg_path, years):
+    if not gpkg_path or not os.path.exists(gpkg_path):
+        return None
+    year_set = set(years)
+    try:
+        conn = _gpkg_connect_ro(gpkg_path)
+    except sqlite3.Error:
+        return None
+    try:
+        best = None
+        for lyr in _gpkg_feature_tables(conn):
+            if not lyr.startswith("fho_"):
+                continue
+            parts = lyr.split("_")
+            if len(parts) != 3:
+                continue
+            try:
+                y = int(parts[1])
+            except ValueError:
+                continue
+            if y not in year_set:
+                continue
+            d = _gpkg_max_in_layer(conn, lyr, "issuance_date")
+            if d is not None and (best is None or d > best):
+                best = d
+        return best
+    finally:
+        conn.close()
+
+
+def _gpkg_lsr_latest_valid(gpkg_path):
+    if not gpkg_path or not os.path.exists(gpkg_path):
+        return None
+    layer = "LSRs_flood_allYears"
+    try:
+        conn = _gpkg_connect_ro(gpkg_path)
+    except sqlite3.Error:
+        return None
+    try:
+        if layer not in _gpkg_feature_tables(conn):
+            return None
+        return _gpkg_max_in_layer(conn, layer, "VALID")
+    finally:
+        conn.close()
+
+
+def _fill_freshness_fallbacks(state, all_counters, years):
+    """Populate latest_record when a dataset had nothing to do this run (idle incremental)."""
+    if state is None:
+        state = {}
+    year_set = set(years)
+
+    fho = all_counters.get("fho")
+    if fho and fho.get("latest_record") is None:
+        # Prefer GeoPackage: issuance_date is the FHO product issue day (from the source zip name).
+        path = fho.get("output_path") or "fho_all.gpkg"
+        d = _gpkg_fho_latest_issuance(path, year_set)
+        if d:
+            fho["latest_record"] = d
+            fho["freshness_how"] = (
+                "from GPKG: max issuance_date (FHO issue day = date on source zip/file)"
+            )
+        else:
+            dates = []
+            for v in (state.get("fho_last_date") or {}).values():
+                try:
+                    dates.append(datetime.strptime(str(v), "%Y%m%d").date())
+                except (ValueError, TypeError):
+                    pass
+            if dates:
+                fho["latest_record"] = max(dates)
+                fho["freshness_how"] = (
+                    "from state: last-processed zip date per layer (GPKG unavailable)"
+                )
+
+    lsr = all_counters.get("lsr")
+    if lsr and lsr.get("latest_record") is None:
+        s = state.get("lsr_last_date")
+        if s:
+            try:
+                lsr["latest_record"] = datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                try:
+                    lsr["latest_record"] = datetime.fromisoformat(str(s)).date()
+                except ValueError:
+                    pass
+            if lsr.get("latest_record") is not None:
+                lsr["freshness_how"] = "from state: LSR fetch covered through this date"
+        if lsr.get("latest_record") is None:
+            path = lsr.get("output_path") or "LSRs_flood_allYears.gpkg"
+            d = _gpkg_lsr_latest_valid(path)
+            if d:
+                lsr["latest_record"] = d
+                lsr["freshness_how"] = "from GPKG: max event VALID"
+
+    wwa = all_counters.get("wwa")
+    if wwa and wwa.get("latest_record") is None:
+        path = wwa.get("output_path") or "flood_warnings_all.gpkg"
+        d = _gpkg_wwa_latest_issued(path, years)
+        if d:
+            wwa["latest_record"] = d
+            wwa["freshness_how"] = "from GPKG: max warning ISSUED"
 
 
 # ===================================================================
@@ -327,6 +541,17 @@ def _detect_period_from_filename(shp_name):
     return m.group(1) if m else None
 
 
+def _gpd_read_shapefile(path):
+    """Read a shapefile path; suppress GDAL/pyogrio ring-winding RuntimeWarnings (common in NWC exports)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*[Ww]inding order.*",
+            category=RuntimeWarning,
+        )
+        return gpd.read_file(path)
+
+
 def process_fho_zip_bytes(zip_bytes, zip_name, issuance_time):
     """Process an in-memory FHO zip.  Returns list of dicts (rows)."""
     issuance_date = extract_date_from_filename(zip_name)
@@ -353,7 +578,7 @@ def process_fho_zip_bytes(zip_bytes, zip_name, issuance_time):
                     continue
 
                 try:
-                    gdf = gpd.read_file(shp_path)
+                    gdf = _gpd_read_shapefile(shp_path)
                 except Exception as exc:
                     log.warning("Error reading %s in %s: %s", shp_file, zip_name, exc)
                     continue
@@ -549,11 +774,11 @@ def _fho_monthly_report(gdf, year, mode, proc_start, proc_end):
 
     W = 56
     sep = "  " + "─" * W
-    print(f"\n{sep}")
-    print(f"  FHO {year} {mode.upper()}  ─  Monthly Summary")
-    print(sep)
-    print(f"  {'Month':<10} {'Days Exp':>9} {'Issued':>8} {'Cov%':>6} {'Polygons':>10}")
-    print(f"  {'─'*10}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*10}")
+    _safe_print(f"\n{sep}")
+    _safe_print(f"  FHO {year} {mode.upper()}  ─  Monthly Summary")
+    _safe_print(sep)
+    _safe_print(f"  {'Month':<10} {'Days Exp':>9} {'Issued':>8} {'Cov%':>6} {'Polygons':>10}")
+    _safe_print(f"  {'─'*10}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*10}")
     for mo in range(1, max_month + 1):
         mo_start = date(year, mo, 1)
         mo_end   = date(year, mo, _cal.monthrange(year, mo)[1])
@@ -565,11 +790,11 @@ def _fho_monthly_report(gdf, year, mode, proc_start, proc_end):
         pct = f"{n_dates/exp*100:.0f}%" if exp else "─"
         flag = "  << NO DATA" if n_dates == 0 and exp > 0 else ""
         peak_marker = "  ◀ peak" if mo == peak_mo else ""
-        print(f"  {year}-{mo:02d}      {exp:>9}  {n_dates:>7}  {pct:>5}  {n_polys:>10}{flag}{peak_marker}")
-    print(f"  {'─'*10}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*10}")
-    print(f"  {'TOTAL':<10} {total_expected:>9}  {total_issued:>7}  {cov_pct:>4.0f}%  {len(base):>10}")
-    print(sep)
-    print(f"  Impact levels ─ " + "  ".join(
+        _safe_print(f"  {year}-{mo:02d}      {exp:>9}  {n_dates:>7}  {pct:>5}  {n_polys:>10}{flag}{peak_marker}")
+    _safe_print(f"  {'─'*10}  {'─'*9}  {'─'*7}  {'─'*5}  {'─'*10}")
+    _safe_print(f"  {'TOTAL':<10} {total_expected:>9}  {total_issued:>7}  {cov_pct:>4.0f}%  {len(base):>10}")
+    _safe_print(sep)
+    _safe_print(f"  Impact levels ─ " + "  ".join(
         f"{lvl}: {level_counts.get(lvl, 0):,}"
         for lvl in ("Limited", "Considerable", "Catastrophic", "Unknown")
         if level_counts.get(lvl, 0) > 0
@@ -580,7 +805,7 @@ def _fho_monthly_report(gdf, year, mode, proc_start, proc_end):
     max_date = base["issuance_date"].max()
     min_fmt = f"{min_date[:4]}-{min_date[4:6]}-{min_date[6:]}" if min_date else "?"
     max_fmt = f"{max_date[:4]}-{max_date[4:6]}-{max_date[6:]}" if max_date else "?"
-    print(f"  Archive range  ─ {min_fmt} → {max_fmt}")
+    _safe_print(f"  Archive range  ─ {min_fmt} → {max_fmt}")
 
     # Unknown CATEGORY breakdown — list raw strings that couldn't be parsed
     if level_counts.get("Unknown", 0) > 0 and "source_category" in base.columns:
@@ -590,14 +815,14 @@ def _fho_monthly_report(gdf, year, mode, proc_start, proc_end):
             .agg(count="count", earliest="min")
             .sort_values("count", ascending=False)
         )
-        print(f"  Unknown CATEGORY strings ({len(unk):,} rows across {len(cat_groups)} unique values):")
+        _safe_print(f"  Unknown CATEGORY strings ({len(unk):,} rows across {len(cat_groups)} unique values):")
         for cat_val, row in cat_groups.iterrows():
             d = row["earliest"]
             d_fmt = f"{d[:4]}-{d[4:6]}-{d[6:]}" if d else "?"
             display = repr(cat_val) if cat_val else '""'
-            print(f"    {row['count']:>5}×  {display:<40}  earliest: {d_fmt}")
+            _safe_print(f"    {row['count']:>5}×  {display:<40}  earliest: {d_fmt}")
 
-    print(f"{sep}\n")
+    _safe_print(f"{sep}\n")
 
 
 def _lsr_monthly_report(gdf, years):
@@ -625,16 +850,16 @@ def _lsr_monthly_report(gdf, years):
     today = date.today()
     W = 46
     sep = "  " + "─" * W
-    print(f"\n{sep}")
-    print(f"  LSR  ─  Monthly Flood / Flash Flood Event Counts")
-    print(sep)
-    print(f"  Date range in file: {valid_min.strftime('%Y-%m-%d')}  →  {valid_max.strftime('%Y-%m-%d')}")
+    _safe_print(f"\n{sep}")
+    _safe_print(f"  LSR  ─  Monthly Flood / Flash Flood Event Counts")
+    _safe_print(sep)
+    _safe_print(f"  Date range in file: {valid_min.strftime('%Y-%m-%d')}  →  {valid_max.strftime('%Y-%m-%d')}")
     if type_counts:
         split_str = "  ".join(f"{k}: {v:,}" for k, v in sorted(type_counts.items()))
-        print(f"  Event types  ─  {split_str}")
-    print(sep)
-    print(f"  {'Year-Month':<12} {'Events':>8}")
-    print(f"  {'─'*12}  {'─'*8}")
+        _safe_print(f"  Event types  ─  {split_str}")
+    _safe_print(sep)
+    _safe_print(f"  {'Year-Month':<12} {'Events':>8}")
+    _safe_print(f"  {'─'*12}  {'─'*8}")
     for yr in sorted(years):
         max_month = 12 if yr < today.year else today.month
         for mo in range(1, max_month + 1):
@@ -642,10 +867,10 @@ def _lsr_monthly_report(gdf, years):
             n = int(counts.get(p, 0))
             flag = "  << NO DATA" if n == 0 else ""
             peak_marker = "  ◀ peak" if p == peak_p else ""
-            print(f"  {yr}-{mo:02d}        {n:>8}{flag}{peak_marker}")
-    print(f"  {'─'*12}  {'─'*8}")
-    print(f"  {'TOTAL':<12} {len(gdf):>8}")
-    print(f"{sep}\n")
+            _safe_print(f"  {yr}-{mo:02d}        {n:>8}{flag}{peak_marker}")
+    _safe_print(f"  {'─'*12}  {'─'*8}")
+    _safe_print(f"  {'TOTAL':<12} {len(gdf):>8}")
+    _safe_print(f"{sep}\n")
 
 
 def _wwa_monthly_report(gdf, year):
@@ -674,19 +899,19 @@ def _wwa_monthly_report(gdf, year):
 
     W = 60
     sep = "  " + "─" * W
-    print(f"\n{sep}")
-    print(f"  WWA {year}  ─  Monthly Warning Counts")
-    print(sep)
+    _safe_print(f"\n{sep}")
+    _safe_print(f"  WWA {year}  ─  Monthly Warning Counts")
+    _safe_print(sep)
     if damagtag_counts:
         consid  = damagtag_counts.get("CONSIDERABLE", 0)
         catast  = damagtag_counts.get("CATASTROPHIC", 0)
         untagged = sum(v for k, v in damagtag_counts.items()
                        if k not in ("CONSIDERABLE", "CATASTROPHIC"))
-        print(f"  DAMAGTAG breakdown ─  Considerable: {consid:,}  "
+        _safe_print(f"  DAMAGTAG breakdown ─  Considerable: {consid:,}  "
               f"Catastrophic: {catast:,}  Untagged: {untagged:,}")
-    print(sep)
-    print(f"  {'Month':<10} {'FF (Flash)':>10} {'FL (River)':>10} {'Total':>8}")
-    print(f"  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*8}")
+    _safe_print(sep)
+    _safe_print(f"  {'Month':<10} {'FF (Flash)':>10} {'FL (River)':>10} {'Total':>8}")
+    _safe_print(f"  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*8}")
     for mo in range(1, max_month + 1):
         row = by_mo_ph.loc[mo] if mo in by_mo_ph.index else pd.Series({"FF": 0, "FL": 0})
         ff = int(row.get("FF", 0))
@@ -694,12 +919,12 @@ def _wwa_monthly_report(gdf, year):
         total = ff + fl
         flag = "  << NO DATA" if total == 0 else ""
         peak_marker = "  ◀ peak" if mo == peak_mo else ""
-        print(f"  {year}-{mo:02d}      {ff:>10}  {fl:>10}  {total:>8}{flag}{peak_marker}")
+        _safe_print(f"  {year}-{mo:02d}      {ff:>10}  {fl:>10}  {total:>8}{flag}{peak_marker}")
     total_ff = int(by_mo_ph.get("FF", pd.Series(0, dtype=int)).sum())
     total_fl = int(by_mo_ph.get("FL", pd.Series(0, dtype=int)).sum())
-    print(f"  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*8}")
-    print(f"  {'TOTAL':<10} {total_ff:>10}  {total_fl:>10}  {total_ff+total_fl:>8}")
-    print(f"{sep}\n")
+    _safe_print(f"  {'─'*10}  {'─'*10}  {'─'*10}  {'─'*8}")
+    _safe_print(f"  {'TOTAL':<10} {total_ff:>10}  {total_fl:>10}  {total_ff+total_fl:>8}")
+    _safe_print(f"{sep}\n")
 
 
 def process_fho(years, output_path, state, update_mode=False):
@@ -707,12 +932,13 @@ def process_fho(years, output_path, state, update_mode=False):
     counters = {"downloaded": 0, "skipped_404": 0, "failed": 0, "processed": 0,
                 "failed_items": [], "year_counts": {}, "year_mode_404s": {}, "latest_record": None}
 
-    # Update-mode resume summary
+    # Update-mode resume summary (one block — avoids log lines from other threads splicing in)
     if update_mode and state.get("fho_last_date"):
-        print("  FHO update mode — resuming from:")
+        resume_lines = ["  FHO update mode — resuming from:"]
         for k, v in sorted(state["fho_last_date"].items()):
             resume_d = (datetime.strptime(v, "%Y%m%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-            print(f"    {k}: last saved {v}  →  fetching from {resume_d}")
+            resume_lines.append(f"    {k}: last saved {v}  →  fetching from {resume_d}")
+        _safe_print("\n".join(resume_lines))
 
     for year in years:
         for mode in ("am", "pm"):
@@ -752,7 +978,7 @@ def process_fho(years, output_path, state, update_mode=False):
                 if not urls:
                     continue
 
-                print(f"\n▶ FHO {year} {mode.upper()}  —  checking {len(urls)} dates"
+                _safe_print(f"\n▶ FHO {year} {mode.upper()}  —  checking {len(urls)} dates"
                       f"  ({start} → {end})")
                 _done = 0
                 _milestone = max(1, len(urls) // 10)
@@ -760,7 +986,7 @@ def process_fho(years, output_path, state, update_mode=False):
                     futures = {pool.submit(_download_single_fho, u): u for u in urls}
                     for fut in tqdm(as_completed(futures), total=len(futures),
                                     desc=f"FHO {year} {mode.upper()}", unit="zip",
-                                    disable=_NO_TTY):
+                                    disable=_NO_TTY, file=sys.stdout):
                         fname, data, status = fut.result()
                         _done += 1
                         if status == "404":
@@ -785,7 +1011,7 @@ def process_fho(years, output_path, state, update_mode=False):
                                 counters["failed"] += 1
                                 iter_failures += 1
                         if _NO_TTY and (_done % _milestone == 0 or _done == len(urls)):
-                            print(f"  FHO {year} {mode.upper()}: {_done}/{len(urls)}"
+                            _safe_print(f"  FHO {year} {mode.upper()}: {_done}/{len(urls)}"
                                   f" ({_done/len(urls)*100:.0f}%)  "
                                   f"got={_iter_downloaded}  "
                                   f"404s={iter_404s}  "
@@ -813,17 +1039,20 @@ def process_fho(years, output_path, state, update_mode=False):
                         year_zips.append(zp)
 
                 if not year_zips:
-                    log.info("  No local files for FHO %d %s", year, mode.upper())
+                    log.info(
+                        "  No local FHO zips in %s–%s for %d %s (incremental window — nothing to load)",
+                        start, end, year, mode.upper(),
+                    )
                     continue
 
-                print(f"\n▶ FHO {year} {mode.upper()}  —  loading {len(year_zips)} local zip files")
+                _safe_print(f"\n▶ FHO {year} {mode.upper()}  —  loading {len(year_zips)} local zip files")
                 _done = 0
                 _milestone = max(1, len(year_zips) // 10)
                 with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
                     futures = {pool.submit(_load_single_fho_local, zp): zp for zp in year_zips}
                     for fut in tqdm(as_completed(futures), total=len(futures),
                                     desc=f"FHO {year} {mode.upper()} (local)", unit="zip",
-                                    disable=_NO_TTY):
+                                    disable=_NO_TTY, file=sys.stdout):
                         fname, data = fut.result()
                         _done += 1
                         if data is None:
@@ -843,7 +1072,7 @@ def process_fho(years, output_path, state, update_mode=False):
                                 counters["failed"] += 1
                                 iter_failures += 1
                         if _NO_TTY and (_done % _milestone == 0 or _done == len(year_zips)):
-                            print(f"  FHO {year} {mode.upper()} (local): {_done}/{len(year_zips)}"
+                            _safe_print(f"  FHO {year} {mode.upper()} (local): {_done}/{len(year_zips)}"
                                   f" ({_done/len(year_zips)*100:.0f}%)  "
                                   f"loaded={_iter_downloaded}  "
                                   f"rows so far={len(all_rows)}  "
@@ -853,11 +1082,11 @@ def process_fho(years, output_path, state, update_mode=False):
                 log.info("  No data for FHO %d %s", year, mode.upper())
                 continue
 
-            print(f"  ✓ FHO {year} {mode.upper()} downloads done  —  "
+            _safe_print(f"  ✓ FHO {year} {mode.upper()} downloads done  —  "
                   f"{_iter_downloaded} files loaded  |  "
                   f"{iter_404s} not found (404)  |  "
                   f"{iter_failures} failed")
-            print(f"  Building GeoDataFrame from {len(all_rows):,} raw rows...")
+            _safe_print(f"  Building GeoDataFrame from {len(all_rows):,} raw rows...")
             gdf = gpd.GeoDataFrame(all_rows, geometry="geometry", crs=CRS_TARGET)
 
             # In update mode, merge with existing layer data before dedup
@@ -872,7 +1101,7 @@ def process_fho(years, output_path, state, update_mode=False):
                     log.warning("  Could not read existing layer %s for merge — "
                                 "new data only will be written: %s", layer, exc)
 
-            print(f"  Deduplicating {len(gdf):,} rows...")
+            _safe_print(f"  Deduplicating {len(gdf):,} rows...")
             # Dedup: key = geom_wkb_hash + issuance_date + impact_level + forecast_period
             gdf["_geom_hash"] = gdf.geometry.apply(lambda g: hashlib.md5(g.wkb).hexdigest())
             gdf["_dedup"] = gdf["_geom_hash"] + "_" + gdf["issuance_date"] + "_" + gdf["impact_level"] + "_" + gdf["forecast_period"]
@@ -897,11 +1126,11 @@ def process_fho(years, output_path, state, update_mode=False):
             _fho_monthly_report(gdf, year, mode, start, end)
             base_for_yc = gdf[gdf["impact_level"] != "Limited_merged"]
             lm_count = len(gdf) - len(base_for_yc)
-            print(f"  Writing layer {layer} ({len(base_for_yc):,} polygons"
+            _safe_print(f"  Writing layer {layer} ({len(base_for_yc):,} polygons"
                   f" + {lm_count:,} Limited_merged)...")
             _write_layer(gdf, output_path, layer)
             counters["processed"] += len(base_for_yc)   # base polygons only; matches YoY table
-            print(f"  ✓ Saved {layer}  ({len(base_for_yc):,} base polygons"
+            _safe_print(f"  ✓ Saved {layer}  ({len(base_for_yc):,} base polygons"
                   f" + {lm_count:,} Limited_merged synthetic rows)")
 
             # Accumulate year_counts (base polygons only), coverage breakdown, and latest_record
@@ -957,16 +1186,16 @@ def process_lsr(years, output_path, state, update_mode=False):
         else:
             resume = datetime.strptime(state["lsr_last_date"], "%Y-%m-%d").date() + timedelta(days=1)
             if resume > overall_end:
-                log.info("LSR already up to date")
+                _safe_print("  LSR — already up to date (no fetch).")
                 counters["output_path"] = output_path
                 counters["file_size"] = os.path.getsize(output_path)
                 return counters
-            print(f"  LSR resuming from: {state['lsr_last_date']}  →  fetching from {resume}")
+            _safe_print(f"  LSR resuming from: {state['lsr_last_date']}  →  fetching from {resume}")
             overall_start = resume
 
     all_features = []
     chunks = list(_chunk_dates(overall_start, overall_end))
-    print(f"\n▶ LSR  —  fetching {len(chunks)} chunks  ({overall_start} → {overall_end})")
+    _safe_print(f"\n▶ LSR  —  fetching {len(chunks)} chunks  ({overall_start} → {overall_end})")
 
     def _fetch_lsr_chunk(chunk_range):
         """Download a single LSR chunk and return filtered features."""
@@ -994,7 +1223,7 @@ def process_lsr(years, output_path, state, update_mode=False):
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(chunks))) as pool:
         futures = {pool.submit(_fetch_lsr_chunk, c): c for c in chunks}
         for fut in tqdm(as_completed(futures), total=len(futures),
-                        desc="LSR chunks", unit="chunk", disable=_NO_TTY):
+                        desc="LSR chunks", unit="chunk", disable=_NO_TTY, file=sys.stdout):
             cs, ce, status, feats = fut.result()
             _lsr_done += 1
             if status is None:
@@ -1009,7 +1238,7 @@ def process_lsr(years, output_path, state, update_mode=False):
                 counters["downloaded"] += 1
                 all_features.extend(feats)
             if _NO_TTY and (_lsr_done % _lsr_milestone == 0 or _lsr_done == len(chunks)):
-                print(f"  LSR: {_lsr_done}/{len(chunks)} chunks"
+                _safe_print(f"  LSR: {_lsr_done}/{len(chunks)} chunks"
                       f" ({_lsr_done/len(chunks)*100:.0f}%)  "
                       f"features collected={len(all_features):,}  "
                       f"failed={counters['failed']}")
@@ -1018,9 +1247,9 @@ def process_lsr(years, output_path, state, update_mode=False):
         log.warning("No LSR features collected")
         return counters
 
-    print(f"  ✓ LSR fetch done  —  {len(all_features):,} raw features  |  "
+    _safe_print(f"  ✓ LSR fetch done  —  {len(all_features):,} raw features  |  "
           f"{counters['failed']} chunk(s) failed")
-    print(f"  Building GeoDataFrame + reprojecting to EPSG:5070...")
+    _safe_print(f"  Building GeoDataFrame + reprojecting to EPSG:5070...")
     gdf = gpd.GeoDataFrame.from_features(all_features, crs="EPSG:4326")
 
     # Rename columns per spec
@@ -1083,10 +1312,10 @@ def process_lsr(years, output_path, state, update_mode=False):
         gdf = gdf.drop(columns=["_yr_tmp"])
 
     _lsr_monthly_report(gdf, years)
-    print(f"  Writing LSRs_flood_allYears ({len(gdf):,} records)...")
+    _safe_print(f"  Writing LSRs_flood_allYears ({len(gdf):,} records)...")
     _write_layer(gdf, output_path, "LSRs_flood_allYears")
     counters["processed"] = len(gdf)
-    print(f"  ✓ Saved LSRs_flood_allYears  ({len(gdf):,} records)")
+    _safe_print(f"  ✓ Saved LSRs_flood_allYears  ({len(gdf):,} records)")
 
     if counters["failed"] > 0:
         log.warning("LSR: %d chunk(s) failed — NOT advancing lsr_last_date to avoid gaps. "
@@ -1103,13 +1332,20 @@ def process_lsr(years, output_path, state, update_mode=False):
 # WWA Processing
 # ===================================================================
 
-def _download_and_process_wwa_year(year):
-    """Download and process a single year of WWA data. Returns (year, gdf_or_None, error_str)."""
+def _download_and_process_wwa_year(year, *, quiet_download=False):
+    """Download and process a single year of WWA data. Returns (year, gdf_or_None, error_str).
+
+    When ``quiet_download`` is True, skip the byte-level tqdm (used when several WWA years
+    download in parallel — multiple ``\\r`` bars on one stream garble output).
+    """
     url = f"{WWA_PICKUP}/{year}_all.zip"
     tmp = tempfile.mkdtemp(prefix="wwa_")
     zip_path = os.path.join(tmp, f"{year}_all.zip")
     try:
-        ok = http_download_to_file(url, zip_path, timeout=300, desc=f"WWA {year}")
+        ok = http_download_to_file(
+            url, zip_path, timeout=300, desc=f"WWA {year}",
+            progress=not quiet_download,
+        )
         if not ok:
             return year, None, "download_failed"
 
@@ -1131,7 +1367,7 @@ def _download_and_process_wwa_year(year):
         year_gdfs = []
         for shp in shp_files:
             try:
-                gdf = gpd.read_file(shp)
+                gdf = _gpd_read_shapefile(shp)
             except Exception as exc:
                 log.warning("Error reading %s: %s", shp, exc)
                 continue
@@ -1190,19 +1426,25 @@ def process_wwa(years, output_path, state, update_mode=False):
             years_to_process.append(year)
 
     if skipped_years:
-        print(f"  WWA — years already complete on disk, skipping: {skipped_years}")
+        _safe_print(f"  WWA — years already complete on disk, skipping: {skipped_years}")
 
     if not years_to_process:
         counters["output_path"] = output_path
         counters["file_size"] = os.path.getsize(output_path) if os.path.exists(output_path) else 0
         return counters
 
-    print(f"\n▶ WWA  —  downloading {len(years_to_process)} year(s): {years_to_process}")
+    _safe_print(f"\n▶ WWA  —  downloading {len(years_to_process)} year(s): {years_to_process}")
     log.info("WWA – downloading %d year(s) concurrently: %s",
              len(years_to_process), years_to_process)
 
+    # Parallel byte-level tqdm bars fight over one terminal line; disable when >1 year.
+    parallel_wwa = len(years_to_process) > 1
+
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(years_to_process))) as pool:
-        futures = {pool.submit(_download_and_process_wwa_year, y): y for y in years_to_process}
+        futures = {
+            pool.submit(_download_and_process_wwa_year, y, quiet_download=parallel_wwa): y
+            for y in years_to_process
+        }
         for fut in as_completed(futures):
             year, gdf, error = fut.result()
             if error:
@@ -1212,11 +1454,11 @@ def process_wwa(years, output_path, state, update_mode=False):
                 continue
             counters["downloaded"] += 1
             layer = f"wwa_{year}"
-            print(f"  WWA {year} — writing {len(gdf):,} warnings...")
+            _safe_print(f"  WWA {year} — writing {len(gdf):,} warnings...")
             _write_layer(gdf, output_path, layer)
             counters["processed"] += len(gdf)
             counters["year_counts"][year] = len(gdf)
-            print(f"  ✓ Saved {layer}  ({len(gdf):,} FF/FL warnings)")
+            _safe_print(f"  ✓ Saved {layer}  ({len(gdf):,} FF/FL warnings)")
             # Track latest ISSUED date across years
             if "ISSUED" in gdf.columns:
                 lr = pd.to_datetime(gdf["ISSUED"], errors="coerce").max()
@@ -1259,31 +1501,35 @@ def _print_config_banner(args, datasets, update_mode, mode_source):
             lines.append(value[:avail])
             value = value[avail:]
         lines.append(value)
-        print(f"║  {label:<14}: {lines[0]:<{avail}}║")
+        _safe_print(f"║  {label:<14}: {lines[0]:<{avail}}║")
         for cont in lines[1:]:
-            print(f"║  {'':14}  {cont:<{avail}}║")
+            _safe_print(f"║  {'':14}  {cont:<{avail}}║")
 
     bar = "═" * W
-    print(f"\n╔{bar}╗")
-    print(f"║{'FHO EVALUATION PIPELINE':^{W}}║")
-    print(f"╠{bar}╣")
+    _safe_print(f"\n╔{bar}╗")
+    _safe_print(f"║{'FHO EVALUATION PIPELINE':^{W}}║")
+    _safe_print(f"╠{bar}╣")
     _row("Started",    datetime.now().strftime('%Y-%m-%d  %H:%M:%S'))
     _row("Datasets",   ds_str)
     _row("Years",      years_str)
     _row("FHO source", src_label)
     _row("Mode",       mode_label)
     _row("Workers",    str(args.workers))
-    print(f"╚{bar}╝\n")
+    _safe_print(f"╚{bar}╝\n")
 
 
-def _print_run_summary(all_counters, total_elapsed, parallel):
+def _print_run_summary(all_counters, total_elapsed, parallel, state=None):
     """Print the final pipeline run summary table with staleness check."""
     # Column widths
-    C = {"ds": 9, "ela": 10, "dl": 11, "s404": 9, "skip": 8, "fail": 7, "rec": 18}
+    C = {"ds": 9, "ela": 10, "dl": 11, "s404": 9, "skip": 8, "fail": 7, "rec": 24}
 
     def row(ds, ela, dl, s404, skip, fail, rec, size):
         size_str = f"/ {_format_size(size)}" if size else ""
-        rec_str  = f"{rec:,} {size_str}".strip()
+        # Counters["processed"] is this run only; file_size is the on-disk GeoPackage (still large if idle).
+        if rec == 0 and size > 0:
+            rec_str = f"0 idle / {_format_size(size)}"
+        else:
+            rec_str = f"{rec:,} {size_str}".strip()
         return (f"║ {ds:<{C['ds']}} ║ {ela:>{C['ela']}} ║ {dl:>{C['dl']},} ║"
                 f" {s404:>{C['s404']},} ║ {skip:>{C['skip']},} ║ {fail:>{C['fail']},} ║"
                 f" {rec_str:<{C['rec']}} ║")
@@ -1297,16 +1543,16 @@ def _print_run_summary(all_counters, total_elapsed, parallel):
     mid = _div("╠","╪","╣"); bot = _div("╚","╧","╝")
     hdr = (f"║ {'Dataset':<{C['ds']}} ║ {'Elapsed':>{C['ela']}} ║ {'Downloaded':>{C['dl']}} ║"
            f" {'FHO 404s':>{C['s404']}} ║ {'Skipped':>{C['skip']}} ║ {'Failed':>{C['fail']}} ║"
-           f" {'Records / Size':<{C['rec']}} ║")
+           f" {'Written / Size':<{C['rec']}} ║")
 
     note = "  (datasets ran concurrently — elapsed times overlap)" if parallel else ""
     title = "PIPELINE RUN SUMMARY" + note
     inner_w = sum(C.values()) + len(C) * 3 - 1
-    print(f"\n{top}")
-    print(f"║{title:^{inner_w}}║")
-    print(div)
-    print(hdr)
-    print(div)
+    _safe_print(f"\n{top}")
+    _safe_print(f"║{title:^{inner_w}}║")
+    _safe_print(div)
+    _safe_print(hdr)
+    _safe_print(div)
 
     t_dl = t_s404 = t_skip = t_fail = t_rec = t_size = 0
     for ds in ("fho", "lsr", "wwa"):
@@ -1321,15 +1567,25 @@ def _print_run_summary(all_counters, total_elapsed, parallel):
         rec  = c.get("processed", 0)
         size = c.get("file_size", 0)
         t_dl += dl; t_s404 += s404; t_skip += skip; t_fail += fail; t_rec += rec; t_size += size
-        print(row(ds.upper(), ela, dl, s404, skip, fail, rec, size))
+        _safe_print(row(ds.upper(), ela, dl, s404, skip, fail, rec, size))
 
-    print(mid)
-    print(row("TOTAL", _format_elapsed(total_elapsed), t_dl, t_s404, t_skip, t_fail, t_rec, t_size))
-    print(bot)
-    print(f"  * FHO 404s   = days with no issuance on the NWC server (normal — FHO is issued every")
-    print(f"                 day but server 404s occur when files aren't yet posted or for archive gaps)")
-    print(f"  * FHO Records = base polygons only (Limited/Considerable/Catastrophic/Unknown).")
-    print(f"                 Synthetic Limited_merged rows are written to the GeoPackage but excluded here.")
+    _safe_print(mid)
+    _safe_print(row("TOTAL", _format_elapsed(total_elapsed), t_dl, t_s404, t_skip, t_fail, t_rec, t_size))
+    _safe_print(bot)
+    if _FHO_SOURCE == "nwc":
+        _safe_print(f"  * FHO 404s   = NWC HTTP 404 (no zip that day — normal for some dates / archive gaps).")
+        _safe_print(f"  * FHO Records = base polygons only (Limited/Considerable/Catastrophic/Unknown).")
+        _safe_print(f"                 Synthetic Limited_merged rows are written to the GeoPackage but excluded here.")
+    else:
+        _safe_print(f"  * FHO source = local directory — the FHO 404s column is unused (0); see table below.")
+        _safe_print(f"  * FHO Records = base polygons only (Limited/Considerable/Catastrophic/Unknown).")
+        _safe_print(f"                 Synthetic Limited_merged rows are written to the GeoPackage but excluded here.")
+    _safe_print(f"  * LSR Downloaded = successful ~{LSR_CHUNK_DAYS}-day API chunks (not per-HTTP-request count).")
+    _safe_print(f"  * WWA Downloaded = yearly zip files retrieved from IEM.")
+    _safe_print(f"  * Written / Size — row counts are this run only (0 idle = no layer rewrite).")
+    _safe_print(f"                 File size is the output GeoPackage on disk (unchanged when idle).")
+    _safe_print(f"  * DATA FRESHNESS — dates from this run when any rows were processed; on an idle")
+    _safe_print(f"                 re-run they are filled from pipeline_state.json and/or GeoPackage.")
 
     # --- Data freshness ---
     today = date.today()
@@ -1337,10 +1593,12 @@ def _print_run_summary(all_counters, total_elapsed, parallel):
     # FHO staleness is only meaningful when pulling live from NWC;
     # Local FHO archives are bounded by whatever was saved — not actionable.
     fho_is_offline = _FHO_SOURCE != "nwc"
-    # WWA staleness is only meaningful when the current year was included in the run;
-    # for purely historical runs the latest record will always be end-of-last-year.
+    # WWA staleness: treat as including current year if we wrote that year this run *or*
+    # state lists that year complete (idle re-run has empty year_counts).
     wwa_year_counts = all_counters.get("wwa", {}).get("year_counts", {})
-    wwa_includes_current_year = date.today().year in wwa_year_counts
+    wwa_done = set(state.get("wwa_years_done") or []) if state else set()
+    ycur = date.today().year
+    wwa_includes_current_year = ycur in wwa_year_counts or ycur in wwa_done
     any_stale = False
     freshness_lines = []
     for ds in ("fho", "lsr", "wwa"):
@@ -1372,16 +1630,18 @@ def _print_run_summary(all_counters, total_elapsed, parallel):
             any_stale = True
         else:
             marker = f"  ok  ({days_old}d ago)"
-        freshness_lines.append(f"    {ds.upper():<6}  latest record: {lr}  {marker}")
+        how = all_counters[ds].get("freshness_how")
+        extra = f"  — {how}" if how else ""
+        freshness_lines.append(f"    {ds.upper():<6}  latest record: {lr}  {marker}{extra}")
 
     if freshness_lines:
-        print(f"\n  DATA FRESHNESS")
-        print(f"  {'─'*54}")
+        _safe_print(f"\n  DATA FRESHNESS")
+        _safe_print(f"  {'─'*54}")
         for line in freshness_lines:
-            print(line)
+            _safe_print(line)
         if any_stale:
-            print(f"\n  !! One or more datasets appear stale. Re-run or check the source.")
-    print()
+            _safe_print(f"\n  !! One or more datasets appear stale. Re-run or check the source.")
+    _safe_print()
 
 
 def _print_yoy_table(all_counters, years):
@@ -1401,11 +1661,11 @@ def _print_yoy_table(all_counters, years):
     wwa_peak = max(wwa_yc, key=wwa_yc.get) if wwa_yc else None
 
     sep = "  " + "─" * 58
-    print(f"\n{sep}")
-    print(f"  YEAR-OVER-YEAR COMPARISON")
-    print(sep)
-    print(f"  {'Year':<7} {'FHO Polygons':>13} {'LSR Events':>12} {'WWA Warnings':>14}")
-    print(f"  {'─'*6}  {'─'*13}  {'─'*12}  {'─'*14}")
+    _safe_print(f"\n{sep}")
+    _safe_print(f"  YEAR-OVER-YEAR COMPARISON")
+    _safe_print(sep)
+    _safe_print(f"  {'Year':<7} {'FHO Polygons':>13} {'LSR Events':>12} {'WWA Warnings':>14}")
+    _safe_print(f"  {'─'*6}  {'─'*13}  {'─'*12}  {'─'*14}")
     fho_tot = lsr_tot = wwa_tot = 0
     for yr in all_years:
         fho_n = fho_yc.get(yr, 0); lsr_n = lsr_yc.get(yr, 0); wwa_n = wwa_yc.get(yr, 0)
@@ -1413,20 +1673,23 @@ def _print_yoy_table(all_counters, years):
         fho_mark = " ◀" if yr == fho_peak else "  "
         lsr_mark = " ◀" if yr == lsr_peak else "  "
         wwa_mark = " ◀" if yr == wwa_peak else "  "
-        print(f"  {yr:<7} {fho_n:>11,}{fho_mark} {lsr_n:>10,}{lsr_mark} {wwa_n:>12,}{wwa_mark}")
-    print(f"  {'─'*6}  {'─'*13}  {'─'*12}  {'─'*14}")
-    print(f"  {'TOTAL':<7} {fho_tot:>13,} {lsr_tot:>12,} {wwa_tot:>14,}")
-    print(f"{sep}\n")
+        _safe_print(f"  {yr:<7} {fho_n:>11,}{fho_mark} {lsr_n:>10,}{lsr_mark} {wwa_n:>12,}{wwa_mark}")
+    _safe_print(f"  {'─'*6}  {'─'*13}  {'─'*12}  {'─'*14}")
+    _safe_print(f"  {'TOTAL':<7} {fho_tot:>13,} {lsr_tot:>12,} {wwa_tot:>14,}")
+    _safe_print(f"{sep}\n")
 
     # FHO 404 coverage breakdown (only when FHO was processed)
     fho_404s = all_counters.get("fho", {}).get("year_mode_404s", {})
     if fho_404s:
         sep2 = "  " + "─" * 54
-        print(f"{sep2}")
-        print(f"  FHO DOWNLOAD COVERAGE  (404 = no file published that day)")
-        print(sep2)
-        print(f"  {'Year/Mode':<12} {'Downloaded':>12} {'404s (gap)':>12} {'Failed':>8}")
-        print(f"  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
+        _safe_print(f"{sep2}")
+        if _FHO_SOURCE == "nwc":
+            _safe_print(f"  FHO NWC COVERAGE  (404 = no zip at that URL that day)")
+        else:
+            _safe_print(f"  FHO LOCAL COVERAGE  (zip files matched per year/mode; 404 column unused)")
+        _safe_print(sep2)
+        _safe_print(f"  {'Year/Mode':<12} {'Downloaded':>12} {'404s (gap)':>12} {'Failed':>8}")
+        _safe_print(f"  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
         for yr in all_years:
             for mode in ("am", "pm"):
                 key = f"{yr}_{mode}"
@@ -1437,8 +1700,8 @@ def _print_yoy_table(all_counters, years):
                 n_404  = stats["skipped_404"]
                 n_fail = stats["failed"]
                 fail_str = f"{n_fail:>8,}" if n_fail else "      —"
-                print(f"  {yr} {mode.upper():<8} {n_dl:>12,}  {n_404:>12,}  {fail_str}")
-        print(f"{sep2}\n")
+                _safe_print(f"  {yr} {mode.upper():<8} {n_dl:>12,}  {n_404:>12,}  {fail_str}")
+        _safe_print(f"{sep2}\n")
 
 
 def _print_failure_details(all_counters):
@@ -1451,19 +1714,19 @@ def _print_failure_details(all_counters):
         return
 
     sep = "  " + "─" * 54
-    print(f"\n{sep}")
-    print(f"  FAILED ITEMS  (re-run to retry these)")
-    print(sep)
+    _safe_print(f"\n{sep}")
+    _safe_print(f"  FAILED ITEMS  (re-run to retry these)")
+    _safe_print(sep)
     for ds in ("fho", "lsr", "wwa"):
         items = all_counters.get(ds, {}).get("failed_items", [])
         if not items:
             continue
-        print(f"\n  {ds.upper()} ({len(items)} failure{'s' if len(items)>1 else ''}):")
+        _safe_print(f"\n  {ds.upper()} ({len(items)} failure{'s' if len(items)>1 else ''}):")
         for item in items[:50]:   # cap at 50 so it doesn't flood the terminal
-            print(f"    • {item}")
+            _safe_print(f"    • {item}")
         if len(items) > 50:
-            print(f"    ... and {len(items)-50} more (see log for full list)")
-    print(f"{sep}\n")
+            _safe_print(f"    ... and {len(items)-50} more (see log for full list)")
+    _safe_print(f"{sep}\n")
 
 
 def _ensure_utf8_stdio():
@@ -1574,7 +1837,8 @@ def main():
         save_state(state)
 
     total_elapsed = time.time() - t0
-    _print_run_summary(all_counters, total_elapsed, parallel)
+    _fill_freshness_fallbacks(state, all_counters, args.years)
+    _print_run_summary(all_counters, total_elapsed, parallel, state=state)
     _print_yoy_table(all_counters, args.years)
     _print_failure_details(all_counters)
 

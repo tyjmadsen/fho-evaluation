@@ -1,17 +1,6 @@
 # FHO Evaluation
 
-A **Flood Hazard Outlook (FHO) verification** toolkit: it builds three GeoPackages from public NWS/IEM sources (or from **local** FHO zip files), then serves a **Flask** dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
-
-There are two main experiences in the browser:
-
-| Route | Purpose |
-|-------|---------|
-| `/` | FHO evaluation — pick date, AM/PM, forecast period, impact level; map + verification stats (POD-style checks, Chart.js charts). |
-| `/ibw-validation` | IBW validation — focus on high-impact flash-flood warnings and geometry coverage. |
-
----
-
-## How it fits together
+A **Flood Hazard Outlook (FHO) verification** toolkit that builds three GeoPackages from public NWS/IEM sources (or local FHO zip files), then serves a Flask dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
 
 ```mermaid
 flowchart LR
@@ -44,148 +33,141 @@ flowchart LR
   WWA --> A
 ```
 
-- **`pipeline.py`** — preferred way to produce or refresh the three `.gpkg` files in the project root (same directory as `app.py` when you run the app locally).
-- **`app.py`** — reads GeoPackages stored in **EPSG:5070**, **reprojects to EPSG:4326** for Leaflet, caches API responses, and exposes REST endpoints consumed by `static/js/app.js` and `static/js/ibw.js`.
-
 ---
 
-## Requirements
+## Quick start
 
-- **Python** 3.9+ (Docker image uses 3.9; 3.9–3.12 are the safest choices while **Fiona** wheels exist for your platform).
-- **Disk** — `fho_all.gpkg` is large (on the order of ~1+ GB depending on years and layers); allow several GB free.
-- **RAM** — 8 GB+ recommended when loading full FHO + LSR + warnings in the app.
+### 1. Install dependencies
 
-### Python dependencies
-
-Install from the repo root with the **same interpreter** you will use to run scripts:
+Requires **Python 3.13+**.
 
 ```bash
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
 ```
 
-**Windows:** If your default `python` is very new (e.g. 3.14) and **Fiona** fails to install (GDAL build errors), use a Python that has binary wheels (3.9–3.12) and keep **one** interpreter for both pip and scripts:
+If Fiona/GDAL fails to install, ensure you're on a Python version that has binary wheels for your platform (3.13 is a safe choice).
 
-```powershell
-py -3.9 -m pip install -r requirements.txt
-py -3.9 pipeline.py
-py -3.9 app.py
-```
-
-**Stack (see `requirements.txt` for pins):** **Flask**, **GeoPandas**, **Pandas**, **NumPy**, **Shapely**, **Fiona**, **PyProj**, **requests**, **tqdm**, **Werkzeug**, **Gunicorn**, **matplotlib**, **python-dateutil**. The browser UI uses **Leaflet**, **Bootstrap 5**, and **Chart.js** (loaded from CDN on the FHO page only).
-
----
-
-## Data outputs (required by the app)
-
-Place these next to `app.py` (or mount them there in Docker):
-
-| File | Contents |
-|------|----------|
-| `fho_all.gpkg` | Layers `fho_{year}_{am\|pm}` for **2022 through the current calendar year** (e.g. `fho_2024_am`). Each layer includes synthetic **`Limited_merged`** rows (union of Limited + Considerable + Catastrophic per issuance group). Key columns: `polygon_id`, `issuance_date` (YYYYMMDD), `issuance_time` (AM/PM), `forecast_period` (1-3/4-7/1-7), `impact_level`, `valid_start`, `valid_end`, `area_sqkm`, `area_bin`, `source_category` (raw CATEGORY string, for debugging Unknown rows). Rows with `CATEGORY = "no area"` (placeholder issuances with no actual hazard polygon) are **excluded** by the pipeline. CRS in file: **EPSG:5070** (app reprojects for the map). |
-| `LSRs_flood_allYears.gpkg` | Layer **`LSRs_flood_allYears`**: point LSRs; flood / flash flood only. Expected columns include `VALID`, `LAT`, `LON`, `EVENT`, `REMARKS`, `geometry`, etc. CRS: **EPSG:5070**. |
-| `flood_warnings_all.gpkg` | Layers `wwa_{year}` for **2022 through the current calendar year**. Flood polygons (`PHENOM` FF/FL, polygon geometry only), with **`DAMAGTAG`** (CONSIDERABLE/CATASTROPHIC/empty) for IBW damage-tag verification. CRS: **EPSG:5070**. |
-
-The app watches file modification times and **reloads** when GeoPackages change (with backoff if a reload fails). It auto-discovers all years present in the GeoPackages — no code change needed when a new year is added.
-
----
-
-## Building data: `pipeline.py` (recommended)
-
-Unified download + processing. **SSL verification is disabled** for some government hosts whose certificates the stack may not trust; this matches operational needs for this project.
-
-### Common commands
+### 2. Build the data
 
 ```bash
-# Default years: 2022 through current calendar year; all three datasets
 python pipeline.py
-
-# Only certain years
-python pipeline.py --years 2024 2025
-
-# One dataset only
-python pipeline.py --only fho
-python pipeline.py --only lsr
-python pipeline.py --only wwa
-
-# Force full rebuild (ignore incremental state)
-python pipeline.py --full
-
-# More parallel download workers (FHO zip downloads per dataset)
-python pipeline.py --workers 8
-
-# FHO from a local folder (zips may be in subfolders — pipeline searches recursively)
-python pipeline.py --fho-source "C:/data/fho_zips"
 ```
 
-### Incremental runs
+This downloads and processes all three datasets (FHO, LSR, WWA) for 2022 through the current year, producing three `.gpkg` files in the project root. See [Pipeline details](#pipeline-details) for filtering, incremental runs, and local source options.
 
-If `pipeline_state.json` already exists and contains progress, a normal run **auto-switches to update mode** (only new FHO dates / LSR range / incomplete WWA years). Use **`--full`** to ignore that state and rebuild from scratch.
-
-Legacy **`--update`** is still accepted for compatibility; behavior is the same as the auto-detected incremental mode.
-
-When you run **all three** datasets in one command (no `--only`), the pipeline **executes them concurrently** (separate threads); elapsed times in the printed summary overlap.
-
-### FHO source (`--fho-source`)
-
-- **`nwc`** (default) — zips from National Weather Center operations, e.g.  
-  `https://ops.nwc.nws.noaa.gov/products/{YEAR}/final/FHO/shpzip/fho_{YYYYMMDD}_{am|pm}_final.zip`  
-  Missing dates (weekends/holidays, archive gaps) are normal; the pipeline counts **404** responses separately in the run summary.
-- **Filesystem path** — directory containing FHO zips named like `fho_YYYYMMDD_am_final.zip` / `fho_YYYYMMDD_pm_final.zip` or `fho_national_YYYYMMDD_am_final.zip` (early-2022 naming). The pipeline searches the directory and **all subdirectories** (`**` glob), so nested layouts (e.g. a `national/` subfolder for pre-June 2022 files) are handled automatically. Use this when you maintain a local mirror of the NWC archive instead of hitting the live server.
-
-### State file
-
-`pipeline_state.json` tracks things like last FHO issuance date per year/mode, last LSR end date, and WWA year completion. It is **created/updated automatically**. Safe to delete if you want a clean incremental baseline (or use `--full`).
-
-### Data sources (reference)
-
-| Dataset | Source |
-|---------|--------|
-| FHO shapefiles | NWC `ops.nwc.nws.noaa.gov` **or** local zip directory (`--fho-source` path) |
-| LSR | IEM `mesonet.agron.iastate.edu/geojson/lsr.php` (fetched in ~90-day chunks) |
-| WWA | IEM `mesonet.agron.iastate.edu/pickup/wwa/{YEAR}_all.zip` |
-
----
-
-## Running the web app
-
-From the repository root (with the three GeoPackages present):
+### 3. Run the app
 
 ```bash
 python app.py
 ```
 
-Open **http://127.0.0.1:5000/** (or the host/port Flask prints).
-
-### API surface (for dashboards / automation)
-
-All JSON POST bodies are specific to the UI; typical endpoints:
-
-- `GET /api/available-dates` — dates and metadata for controls.
-- `POST /api/stats` — verification stats for the main FHO view.
-- `GET /api/high-impact-events` — quick-pick list for high-impact warnings.
-- `POST /api/ibw-stats` — IBW validation page stats.
-- `POST /api/export-csv` — export path for tabular results.
-
-### Production-style run
-
-```bash
-gunicorn --config gunicorn.conf.py app:app
-```
+Open **http://127.0.0.1:5000/**. The app reads the GeoPackages, reprojects from EPSG:5070 to EPSG:4326 for Leaflet, and pre-builds spatial indexes at load time. It watches file modification times and **auto-reloads** when GeoPackages change.
 
 ---
 
-## Docker
+## The dashboard
 
-Build and run from the repo root (compose file lives under `docker/`):
+### FHO Evaluation (`/`)
+
+Pick a date, AM/PM issuance, and forecast period to see FHO polygons verified against LSRs and FFWs. Stats include polygon verification rates, event capture rates, area-bin breakdowns, and daily time series — all rendered with Chart.js.
+
+- **Custom Leaflet panes** enforce strict z-ordering: Catastrophic FFWs always render on top of Considerable, which renders on top of No-Tag FFWs.
+- **View preservation** — switching forecast period (1-3 / 4-7 / 1-7) or AM/PM keeps the current map view. Only date changes re-fit the bounds.
+- **Keyboard shortcuts** — `←`/`→` step dates, `1`/`2`/`3` set forecast period, `A`/`P` toggle AM/PM.
+- **Quick Select** pre-loads high-impact events (Considerable/Catastrophic FHO days and FFW-only days).
+- **CSV export** for the current filter selection.
+
+### IBW Validation (`/ibw-validation`)
+
+Focuses on high-impact flash-flood warnings and how they align with Considerable/Catastrophic FHO polygons. Quick Select with `‹`/`›` event stepping arrows to move through events.
+
+### Shared map features
+
+Both pages include:
+
+- **Stacked popups** — clicking where features overlap opens a pager popup (`‹ 1/N ›` arrows) to cycle through them, ordered by visual layer priority (LSR points first, then FFWs by severity, then FHO polygons).
+- **Feature highlighting** — the currently inspected feature gets a yellow outline/ring that clears when the popup closes.
+- **Ray-cast hit-testing** — accurate point-in-polygon containment for Polygon and MultiPolygon geometries (no turf.js dependency).
+- **Colorblind-safe palette** throughout.
+
+---
+
+## Pipeline details
+
+### Common commands
 
 ```bash
-docker compose -f docker/docker-compose.yml build
-docker compose -f docker/docker-compose.yml up
+# Full run: all years (2022–current), all datasets
+python pipeline.py
+
+# Specific years
+python pipeline.py --years 2024 2025
+
+# Single dataset
+python pipeline.py --only fho
+python pipeline.py --only lsr
+python pipeline.py --only wwa
+
+# Force full rebuild (ignore saved state)
+python pipeline.py --full
+
+# More parallel download workers
+python pipeline.py --workers 8
+
+# FHO from a local zip folder (searches recursively)
+python pipeline.py --fho-source "C:/data/fho_zips"
 ```
 
-The compose file **bind-mounts** the three GeoPackages from the parent directory as **read-only**, plus `templates/`, `static/`, and `gunicorn.conf.py`. The image includes **`app.py`** only (not `pipeline.py`); build data on the host with `pipeline.py`, then refresh or restart the container so the app’s reload logic can see new file mtimes.
+When all three datasets run together (no `--only`), they execute **concurrently** in separate threads.
 
-**Note:** `docker-compose` (v1) also works if you still use the hyphenated command.
+### Incremental runs
+
+If `pipeline_state.json` exists, the pipeline auto-detects prior progress and only fetches new data (new FHO dates, extended LSR range, incomplete WWA years). Use `--full` to ignore saved state and rebuild from scratch. The legacy `--update` flag is still accepted for compatibility.
+
+### FHO source (`--fho-source`)
+
+- **`nwc`** (default) — downloads from NWC operations at `ops.nwc.nws.noaa.gov`.
+- **Local path** — a directory of FHO zips (e.g. `fho_YYYYMMDD_am_final.zip`). Supports nested layouts and early-2022 `fho_national_*` naming. Use this when you maintain a local mirror.
+
+### State file
+
+`pipeline_state.json` tracks incremental progress (last FHO date per year/mode, last LSR end date, WWA year completion). Created and updated automatically. Safe to delete for a clean baseline.
+
+### Data sources
+
+| Dataset | Source |
+|---------|--------|
+| FHO | NWC `ops.nwc.nws.noaa.gov` or local zip directory |
+| LSR | IEM `mesonet.agron.iastate.edu/geojson/lsr.php` (chunked into ~90-day windows) |
+| WWA | IEM `mesonet.agron.iastate.edu/pickup/wwa/{YEAR}_all.zip` |
+
+---
+
+## GeoPackage schemas
+
+The three `.gpkg` files must be in the same directory as `app.py`. The app auto-discovers all years present — no code change needed when a new year is added.
+
+| File | Layers | Key columns | Notes |
+|------|--------|-------------|-------|
+| `fho_all.gpkg` | `fho_{year}_{am\|pm}` | `polygon_id`, `issuance_date`, `issuance_time`, `forecast_period`, `impact_level`, `valid_start`, `valid_end`, `area_sqkm`, `area_bin`, `source_category` | Includes synthetic `Limited_merged` rows. `"no area"` placeholders excluded. |
+| `LSRs_flood_allYears.gpkg` | `LSRs_flood_allYears` | `VALID`, `LAT`, `LON`, `EVENT`, `REMARKS`, `CITY`, `STATE`, `SOURCE`, `WFO`, `TYPECODE` | Flood and flash flood only. |
+| `flood_warnings_all.gpkg` | `wwa_{year}` | `PHENOM`, `ISSUED`, `EXPIRED`, `DAMAGTAG`, `year` | FF/FL polygon-only. `DAMAGTAG` filled with `""` if missing from source. |
+
+All files use **EPSG:5070** (the app reprojects to EPSG:4326 for the map).
+
+---
+
+## API endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/available-dates` | Dates with FHO data for populating controls |
+| POST | `/api/stats` | Verification stats + map geometries for the FHO page |
+| GET | `/api/high-impact-events` | Quick Select list of high-impact events |
+| POST | `/api/ibw-stats` | IBW validation page stats + geometries |
+| POST | `/api/export-csv` | CSV export of daily verification data |
+
+Responses are cached server-side (LRU, max 32 entries per endpoint) and client-side in the browser.
 
 ---
 
@@ -193,51 +175,39 @@ The compose file **bind-mounts** the three GeoPackages from the parent directory
 
 | Path | Role |
 |------|------|
-| `app.py` | Flask app, data load, caching, geometry/stats logic |
-| `pipeline.py` | Download + ETL to the three GeoPackages |
-| `pipeline_state.json` | Incremental pipeline progress (generated; optional to commit) |
-| `templates/fho_evaluation.html` | Main FHO page |
-| `templates/ibw_validation.html` | IBW page |
-| `static/js/app.js` | Main FHO UI logic |
-| `static/js/ibw.js` | IBW page logic |
-| `static/js/shared.js` | Shared helpers (e.g. theme toggle) used by both pages |
-| `static/css/styles.css` | Shared styling |
-| `gunicorn.conf.py` | Gunicorn settings |
-| `docker/` | Dockerfile + compose |
+| `app.py` | Flask app — data loading, caching, geometry/stats logic |
+| `pipeline.py` | Download + ETL producing the three GeoPackages |
+| `pipeline_state.json` | Incremental progress (generated, safe to delete) |
+| `requirements.txt` | Python dependencies |
+| `templates/fho_evaluation.html` | FHO Evaluation page template |
+| `templates/ibw_validation.html` | IBW Validation page template |
+| `static/js/app.js` | FHO page JS |
+| `static/js/ibw.js` | IBW page JS |
+| `static/js/shared.js` | Shared helpers (error display, segmented controls, date formatting) |
+| `static/css/styles.css` | Shared CSS (custom properties, popup-pager, responsive layout) |
+
+**Tech stack:** Flask, GeoPandas, Pandas, NumPy, Shapely, Fiona, PyProj, requests, tqdm. Frontend: Leaflet 1.9, Bootstrap 5, Chart.js 4 (CDN).
 
 ---
 
 ## Troubleshooting
 
-1. **`Data not loaded` / missing layers**
-   Ensure all three `.gpkg` files exist beside `app.py` and layer names match expectations: `fho_{year}_{am|pm}`, **`LSRs_flood_allYears`** (LSR layer), and `wwa_{year}`. Run `python pipeline.py`.
-
-2. **Wrong Python / missing packages after `pip install`**
-   Use `python -m pip install -r requirements.txt` with the **same** `python` (or `py -3.x`) you use to run `pipeline.py` and `app.py`.
-
-3. **Slow first load**
-   Reading large GeoPackages and building spatial indexes takes time. Subsequent requests benefit from in-memory caches.
-
-4. **Port 5000 in use**
-   Stop the other process or change the port in Flask / compose port mapping.
-
-5. **Pipeline SSL or 404 noise**
-   NWC 404s for missing issuance days are expected. Persistent SSL errors on corporate networks may require proxy settings outside the scope of this README.
-
-6. **FHO polygon counts lower than expected / months showing `<< NO DATA`**
-   Two expected causes: (a) your local archive is incomplete for that year/month — the monthly summary prints `Archive range: YYYY-MM-DD → YYYY-MM-DD` to show exactly what's on disk; (b) some issuance days had `CATEGORY = "no area"` (a NWS placeholder meaning no flood hazard was outlined) — these rows are intentionally excluded. The `source_category` column in the GeoPackage retains the raw string for any rows that parsed to `Unknown` impact level, useful for diagnosing new unparseable CATEGORY values.
-
-7. **IBW Quick Select shows unexpected events**
-   The "high-impact FFWs without FHO coverage" list compares FFW issuance dates against FHO issuance dates. If the list appears empty or wrong after a fresh pipeline run, try restarting the Flask app so it reloads the updated GeoPackages.
+1. **`Data not loaded` / missing layers** — Ensure all three `.gpkg` files exist beside `app.py` with the expected layer names (`fho_{year}_{am|pm}`, `LSRs_flood_allYears`, `wwa_{year}`). Run `python pipeline.py`.
+2. **Wrong Python / missing packages** — Make sure `pip install` and your run commands use the same Python interpreter.
+3. **Slow first load** — Reading large GeoPackages and building spatial indexes takes time. Subsequent requests benefit from in-memory caches.
+4. **Port 5000 in use** — Stop the other process or change the port in Flask config.
+5. **Pipeline SSL or 404 noise** — NWC 404s for missing issuance days are expected. Persistent SSL errors on corporate networks may require proxy configuration.
+6. **Low polygon counts / `<< NO DATA` months** — (a) The local archive may be incomplete — the monthly summary prints the actual date range on disk. (b) Issuance days with `CATEGORY = "no area"` are intentionally excluded. The `source_category` column retains the raw string for debugging.
+7. **IBW Quick Select shows unexpected events** — The high-impact FFW list compares FFW dates against FHO dates. After a fresh pipeline run, restart the Flask app to reload GeoPackages.
 
 ---
 
 ## Contributing
 
-Fork, branch, and open a pull request with a clear description of behavior changes (especially any change to GeoPackage schemas or API JSON shapes, which affect the bundled frontend).
+Fork, branch, and open a pull request with a clear description of behavior changes — especially any change to GeoPackage schemas or API response shapes, which affect the frontend.
 
 ---
 
 ## License
 
-License information is provided in the repository’s license file when present; otherwise follow the terms set by the project maintainers.
+License information is provided in the repository's license file when present; otherwise follow the terms set by the project maintainers.

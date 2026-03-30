@@ -11,6 +11,5 @@ pyproj>=3.6.1
 requests>=2.26.0
 tqdm>=4.62.3
 Werkzeug>=2.0.1
-gunicorn>=20.1.0
 matplotlib>=3.4.3
 python-dateutil>=2.8.2 

@@ -31,16 +31,18 @@ var/
 venv/
 ENV/
 
-# IDE
+# IDE / AI assistant config
 .idea/
 .vscode/
+.claude/
+.cursor/
+CLAUDE.md
 *.swp
 *.swo
 .DS_Store
 
-# Docker
-.docker/
-docker-compose.override.yml
+# Pipeline runtime state
+pipeline_state.json
 
 # Logs
 *.log

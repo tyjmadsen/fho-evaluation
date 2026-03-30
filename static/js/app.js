@@ -70,6 +70,24 @@ const config = {
 const map = L.map('map');
 map.fitBounds(config.bounds.CONUS);
 
+// Custom panes for strict z-ordering (higher zIndex = drawn on top)
+const panes = {
+    fho:             map.createPane('fhoPane'),
+    fhoPolygons:     map.createPane('fhoPolygonsPane'),
+    ffwNoTag:        map.createPane('ffwNoTagPane'),
+    ffwConsiderable: map.createPane('ffwConsiderablePane'),
+    ffwCatastrophic: map.createPane('ffwCatastrophicPane'),
+    lsrMiss:         map.createPane('lsrMissPane'),
+    lsrHit:          map.createPane('lsrHitPane'),
+};
+panes.fho.style.zIndex             = 401;
+panes.fhoPolygons.style.zIndex     = 402;
+panes.ffwNoTag.style.zIndex        = 410;
+panes.ffwConsiderable.style.zIndex = 420;
+panes.ffwCatastrophic.style.zIndex = 430;
+panes.lsrMiss.style.zIndex         = 440;
+panes.lsrHit.style.zIndex          = 450;
+
 // Create the base layers
 const lightBaseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
@@ -135,30 +153,60 @@ function generateCacheKey(filters) {
 
 // Helper function to create LSR markers
 function createLSRMarker(feature, latlng, isHit) {
+    const content = createPopupContent('LSR', feature, isHit);
+    const pane = isHit ? 'lsrHitPane' : 'lsrMissPane';
+    let marker;
     if (isHit) {
-        return L.circleMarker(latlng, {
+        marker = L.circleMarker(latlng, {
             ...config.pointMarkers,
             fillColor: config.colors.hit,
-            color: '#065f46'
-        }).bindPopup(createPopupContent('LSR', feature, isHit));
+            color: '#065f46',
+            pane
+        });
     } else {
-        // For misses, use a custom divIcon to create an X
-        return L.marker(latlng, {
+        marker = L.marker(latlng, {
             icon: L.divIcon({
                 html: '✕',
                 className: 'lsr-miss-marker',
                 iconSize: [12, 12]
-            })
-        }).bindPopup(createPopupContent('LSR', feature, isHit));
+            }),
+            pane
+        });
+    }
+    marker._popupContent = content;
+    marker._geojsonFeature = feature;
+    return marker;
+}
+
+// Helper function to determine the correct pane for an FFW feature
+function _ffwPane(feature) {
+    const tag = feature.properties?.DAMAGTAG;
+    if (tag === 'CATASTROPHIC') return 'ffwCatastrophicPane';
+    if (tag === 'CONSIDERABLE') return 'ffwConsiderablePane';
+    return 'ffwNoTagPane';
+}
+
+// Tag a layer and all its sub-layers with popup content + feature ref
+function _tagLayerTree(layer, content, feature) {
+    layer._popupContent = content;
+    layer._geojsonFeature = feature;
+    if (typeof layer.eachLayer === 'function') {
+        layer.eachLayer(sub => {
+            sub._popupContent = content;
+            sub._geojsonFeature = feature;
+            sub._parentLayer = layer;
+        });
     }
 }
 
 // Helper function to create FFW layers
 function createFFWLayer(features, isHit) {
     return L.geoJSON(features, {
-        style: (feature) => getFFWStyle(feature, isHit),
+        style: (feature) => ({ ...getFFWStyle(feature, isHit), pane: _ffwPane(feature) }),
+        pane: 'ffwNoTagPane',
         onEachFeature: (feature, layer) => {
-            layer.bindPopup(createPopupContent('FFW', feature, isHit));
+            _tagLayerTree(layer, createPopupContent('FFW', feature, isHit), feature);
+            layer.options.pane = _ffwPane(feature);
         }
     });
 }
@@ -166,9 +214,10 @@ function createFFWLayer(features, isHit) {
 // Helper function to create FHO layer
 function createFHOLayer(feature) {
     return L.geoJSON(feature, { 
-        style: config.styles.fho,
+        style: { ...config.styles.fho, pane: 'fhoPane' },
+        pane: 'fhoPane',
         onEachFeature: (feature, layer) => {
-            layer.bindPopup(createPopupContent('FHO', feature));
+            _tagLayerTree(layer, createPopupContent('FHO', feature), feature);
         }
     });
 }
@@ -621,7 +670,9 @@ function updateLayerCounts(data) {
     });
 }
 
-function renderMapLayers(data) {
+let _lastRenderedDate = null;
+
+function renderMapLayers(data, { fitView = false } = {}) {
     const emptyState = document.getElementById('mapEmptyState');
     Object.values(layers).forEach(layer => layer.clearLayers());
 
@@ -649,10 +700,12 @@ function renderMapLayers(data) {
         const verifiedCount = polys.filter(f => f.properties.verified).length;
 
         const polyLayer = L.geoJSON(data.geometries.fho_polygons, {
+            pane: 'fhoPolygonsPane',
             style: (feature) => {
                 const v = feature.properties.verified;
                 const hc = feature.properties.hit_count;
                 return {
+                    pane: 'fhoPolygonsPane',
                     color: v ? (hc >= 3 ? '#047857' : '#059669') : '#dc2626',
                     weight: v ? 2.5 : 2,
                     opacity: 0.85,
@@ -673,7 +726,7 @@ function renderMapLayers(data) {
                        <div style="font-size:10px;color:#6b7280;margin-top:2px;">${p.lsr_hits} LSR + ${p.ffw_hits} FFW = ${p.hit_count} events</div>`
                     : '<div style="font-size:10px;color:#dc2626;margin-top:4px;">No events intersected this polygon</div>';
 
-                layer.bindPopup(`
+                const content = `
                     <div class="warning-popup">
                         <div class="title" style="border-left: 4px solid ${statusColor}; padding-left: 8px;">
                             FHO Polygon <span style="color:${statusColor}; font-size:11px; font-weight:600;">[${statusLabel}]</span>
@@ -684,7 +737,8 @@ function renderMapLayers(data) {
                             <div><span class="label">Area:</span> <span class="value">${(p.area_sqkm ?? 0).toLocaleString()} km² (${p.area_bin || 'N/A'})</span></div>
                             ${eventBar}
                         </div>
-                    </div>`, { maxWidth: 280 });
+                    </div>`;
+                _tagLayerTree(layer, content, feature);
             }
         });
         polyLayer.addTo(layers.fhoPolygons);
@@ -705,14 +759,9 @@ function renderMapLayers(data) {
     mapBounds = createAndAddLayer(data.geometries.lsrs_hit, 'LSR', true, layers.lsrsHit, mapBounds);
     mapBounds = createAndAddLayer(data.geometries.lsrs_miss, 'LSR', false, layers.lsrsMiss, mapBounds);
 
-    // Z-order: FHO merged (back) → FHO polygons → FFW miss → FFW hit → LSR miss → LSR hit (front)
-    [layers.fho, layers.fhoPolygons, layers.ffwsMiss, layers.ffwsHit, layers.lsrsMiss, layers.lsrsHit].forEach(lg => {
-        if (map.hasLayer(lg)) {
-            lg.eachLayer(l => { if (typeof l.bringToFront === 'function') l.bringToFront(); });
-        }
-    });
-
-    map.fitBounds(mapBounds?.isValid() ? mapBounds : config.bounds.CONUS);
+    if (fitView) {
+        map.fitBounds(mapBounds?.isValid() ? mapBounds : config.bounds.CONUS);
+    }
 
     updateLayerCounts(data);
 }
@@ -721,6 +770,11 @@ let currentAbortController = null;
 let _fetchGeneration = 0;
 
 async function handleMapUpdate(filters) {
+    const dateKey = `${filters.issuance_date}_${filters.end_date || ''}`;
+    const dateChanged = dateKey !== _lastRenderedDate;
+    _lastRenderedDate = dateKey;
+
+    const renderOpts = { fitView: dateChanged };
     const cacheKey = generateCacheKey(filters);
 
     if (statsCache.has(cacheKey)) {
@@ -729,7 +783,7 @@ async function handleMapUpdate(filters) {
         updateVerifWindow(cachedData);
         updateAreaBinChart(cachedData);
         updateDailyPodChart(cachedData);
-        renderMapLayers(cachedData);
+        renderMapLayers(cachedData, renderOpts);
         return;
     }
 
@@ -763,7 +817,7 @@ async function handleMapUpdate(filters) {
         updateVerifWindow(data);
         updateAreaBinChart(data);
         updateDailyPodChart(data);
-        renderMapLayers(data);
+        renderMapLayers(data, renderOpts);
         pushState();
     } catch (error) {
         if (error.name === 'AbortError') return;
@@ -1208,4 +1262,225 @@ function annotateDateDropdown() {
         if (tags.has('ffw')) indicators.push('\u26A0');
         if (indicators.length) opt.textContent = `${opt.value}  ${indicators.join(' ')}`;
     }
-} 
+}
+
+// ── Stacked popup pager (cycle overlapping features with ‹ › arrows) ─────────
+
+let _stackedPopup = null;
+let _highlightLayer = null;
+
+function _collectLeafLayers(parent, results) {
+    if (typeof parent.eachLayer === 'function') {
+        parent.eachLayer(child => _collectLeafLayers(child, results));
+    } else {
+        results.push(parent);
+    }
+}
+
+function _raycastPointInRing(pt, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if (((yi > pt[1]) !== (yj > pt[1])) &&
+            (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function _pointInPolygonCoords(pt, coords) {
+    if (!_raycastPointInRing(pt, coords[0])) return false;
+    for (let i = 1; i < coords.length; i++) {
+        if (_raycastPointInRing(pt, coords[i])) return false;
+    }
+    return true;
+}
+
+function _pointInGeoJSONGeometry(pt, geom) {
+    if (!geom || !geom.type) return false;
+    if (geom.type === 'Polygon') {
+        return _pointInPolygonCoords(pt, geom.coordinates);
+    }
+    if (geom.type === 'MultiPolygon') {
+        return geom.coordinates.some(poly => _pointInPolygonCoords(pt, poly));
+    }
+    return false;
+}
+
+function _layerContainsPoint(layer, latlng) {
+    if (layer instanceof L.CircleMarker && !(layer instanceof L.Circle)) {
+        const pixelDist = map.latLngToContainerPoint(latlng)
+            .distanceTo(map.latLngToContainerPoint(layer.getLatLng()));
+        return pixelDist <= (layer.getRadius() + 4);
+    }
+    if (layer instanceof L.Marker) {
+        const pixelDist = map.latLngToContainerPoint(latlng)
+            .distanceTo(map.latLngToContainerPoint(layer.getLatLng()));
+        return pixelDist <= 10;
+    }
+    if (typeof layer.getBounds === 'function') {
+        const b = layer.getBounds();
+        if (!b.isValid() || !b.contains(latlng)) return false;
+    }
+    const feat = layer.feature || layer._geojsonFeature;
+    if (feat?.geometry) {
+        const gtype = feat.geometry.type;
+        if (gtype === 'Point' || gtype === 'MultiPoint') {
+            return false;
+        }
+        return _pointInGeoJSONGeometry([latlng.lng, latlng.lat], feat.geometry);
+    }
+    if (typeof layer.getLatLngs === 'function') {
+        return true;
+    }
+    return false;
+}
+
+function _featureSortPriority(layer) {
+    if (layer instanceof L.CircleMarker || layer instanceof L.Marker) return 0;
+    const props = (layer.feature || layer._geojsonFeature)?.properties;
+    if (props?.DAMAGTAG === 'CATASTROPHIC') return 1;
+    if (props?.DAMAGTAG === 'CONSIDERABLE') return 2;
+    if (props?.PHENOM !== undefined) return 3;
+    if (props?.verified !== undefined) return 4;
+    return 5;
+}
+
+function _getFeaturesAtPoint(latlng) {
+    const results = [];
+    const pt = L.latLng(latlng);
+    const seen = new Set();
+    Object.values(layers).forEach(group => {
+        if (!map.hasLayer(group)) return;
+        const leaves = [];
+        _collectLeafLayers(group, leaves);
+        leaves.forEach(leaf => {
+            if (!leaf._popupContent) return;
+            if (seen.has(leaf._popupContent)) return;
+            if (_layerContainsPoint(leaf, pt)) {
+                seen.add(leaf._popupContent);
+                results.push(leaf);
+            }
+        });
+    });
+    results.sort((a, b) => _featureSortPriority(a) - _featureSortPriority(b));
+    return results;
+}
+
+function _clearHighlight() {
+    if (_highlightLayer) {
+        map.removeLayer(_highlightLayer);
+        _highlightLayer = null;
+    }
+}
+
+function _highlightFeature(layer) {
+    _clearHighlight();
+    const target = layer._parentLayer || layer;
+    const hlStyle = {
+        color: '#facc15', weight: 4, opacity: 1,
+        fillOpacity: 0.25, fillColor: '#facc15',
+        dashArray: null, interactive: false
+    };
+    const hlPoint = {
+        radius: 10, color: '#facc15', weight: 3, opacity: 1,
+        fillColor: '#facc15', fillOpacity: 0.3, interactive: false
+    };
+
+    if (target instanceof L.CircleMarker && !(target instanceof L.Circle)) {
+        _highlightLayer = L.circleMarker(target.getLatLng(), {
+            ...hlPoint, radius: target.getRadius() + 6
+        }).addTo(map);
+    } else if (target instanceof L.Marker) {
+        _highlightLayer = L.circleMarker(target.getLatLng(), hlPoint).addTo(map);
+    } else if (typeof target.getLatLngs === 'function') {
+        _highlightLayer = L.polygon(target.getLatLngs(), hlStyle).addTo(map);
+    } else if (typeof target.eachLayer === 'function') {
+        const group = L.featureGroup();
+        target.eachLayer(sub => {
+            if (sub instanceof L.CircleMarker && !(sub instanceof L.Circle)) {
+                L.circleMarker(sub.getLatLng(), {
+                    ...hlPoint, radius: sub.getRadius() + 6
+                }).addTo(group);
+            } else if (sub instanceof L.Marker) {
+                L.circleMarker(sub.getLatLng(), hlPoint).addTo(group);
+            } else if (typeof sub.getLatLngs === 'function') {
+                L.polygon(sub.getLatLngs(), hlStyle).addTo(group);
+            }
+        });
+        if (group.getLayers().length) {
+            group.addTo(map);
+            _highlightLayer = group;
+        }
+    }
+}
+
+function _openStackedPopup(latlng) {
+    const hits = _getFeaturesAtPoint(latlng);
+    if (!hits.length) return;
+
+    if (hits.length === 1) {
+        _clearHighlight();
+        L.popup({ maxWidth: 300 })
+            .setLatLng(latlng)
+            .setContent(hits[0]._popupContent)
+            .openOn(map);
+        _highlightFeature(hits[0]);
+        map.once('popupclose', _clearHighlight);
+        return;
+    }
+
+    let idx = 0;
+
+    function buildContent() {
+        return `<div class="stacked-popup-wrap">
+            <div class="stacked-popup-body">${hits[idx]._popupContent}</div>
+            <div class="popup-pager">
+                <button class="popup-pager-btn" data-dir="prev" ${idx === 0 ? 'disabled' : ''}>&lsaquo;</button>
+                <span class="popup-pager-pos">${idx + 1} / ${hits.length}</span>
+                <button class="popup-pager-btn" data-dir="next" ${idx === hits.length - 1 ? 'disabled' : ''}>&rsaquo;</button>
+            </div>
+        </div>`;
+    }
+
+    if (_stackedPopup) map.closePopup(_stackedPopup);
+    _clearHighlight();
+
+    _stackedPopup = L.popup({ maxWidth: 300, minWidth: 200, closeButton: true })
+        .setLatLng(latlng)
+        .setContent(buildContent())
+        .openOn(map);
+
+    _highlightFeature(hits[0]);
+
+    _stackedPopup.on('remove', () => {
+        _stackedPopup = null;
+        _clearHighlight();
+    });
+
+    function onPagerClick(ev) {
+        const btn = ev.target.closest('[data-dir]');
+        if (!btn) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        if (btn.dataset.dir === 'prev' && idx > 0) idx--;
+        else if (btn.dataset.dir === 'next' && idx < hits.length - 1) idx++;
+        else return;
+        const wrapper = _stackedPopup?.getElement()?.querySelector('.leaflet-popup-content');
+        if (wrapper) wrapper.innerHTML = buildContent();
+        _highlightFeature(hits[idx]);
+    }
+
+    const popupPane = map.getPane('popupPane');
+    popupPane.addEventListener('click', onPagerClick);
+    _stackedPopup.on('remove', () => {
+        popupPane.removeEventListener('click', onPagerClick);
+    });
+}
+
+map.on('click', (e) => {
+    const hits = _getFeaturesAtPoint(e.latlng);
+    if (hits.length) _openStackedPopup(e.latlng);
+}); 

@@ -870,6 +870,38 @@ function getFeaturesAtPoint(latlng) {
     return results;
 }
 
+function _raycastPointInRing(pt, ring) {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const xi = ring[i][0], yi = ring[i][1];
+        const xj = ring[j][0], yj = ring[j][1];
+        if (((yi > pt[1]) !== (yj > pt[1])) &&
+            (pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+function _pointInPolygonCoords(pt, coords) {
+    if (!_raycastPointInRing(pt, coords[0])) return false;
+    for (let i = 1; i < coords.length; i++) {
+        if (_raycastPointInRing(pt, coords[i])) return false;
+    }
+    return true;
+}
+
+function _pointInGeoJSONGeometry(pt, geom) {
+    if (!geom || !geom.type) return false;
+    if (geom.type === 'Polygon') {
+        return _pointInPolygonCoords(pt, geom.coordinates);
+    }
+    if (geom.type === 'MultiPolygon') {
+        return geom.coordinates.some(poly => _pointInPolygonCoords(pt, poly));
+    }
+    return false;
+}
+
 function layerContainsPoint(layer, latlng) {
     if (layer instanceof L.CircleMarker && !(layer instanceof L.Circle)) {
         const center = layer.getLatLng();
@@ -880,12 +912,15 @@ function layerContainsPoint(layer, latlng) {
         const bounds = layer.getBounds();
         if (!bounds.isValid() || !bounds.contains(latlng)) return false;
     }
-    if (layer._geojsonFeature) {
-        if (typeof turf !== 'undefined' && turf.booleanPointInPolygon) {
-            const pt = turf.point([latlng.lng, latlng.lat]);
-            return turf.booleanPointInPolygon(pt, layer._geojsonFeature);
+    const feat = layer._geojsonFeature;
+    if (feat?.geometry) {
+        const gtype = feat.geometry.type;
+        if (gtype === 'Point' || gtype === 'MultiPoint') {
+            return false;
         }
-        // Fallback: bounds check already passed above, accept it
+        return _pointInGeoJSONGeometry([latlng.lng, latlng.lat], feat.geometry);
+    }
+    if (typeof layer.getLatLngs === 'function') {
         return true;
     }
     return false;
