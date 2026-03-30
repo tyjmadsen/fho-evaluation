@@ -1,6 +1,6 @@
 # FHO Evaluation
 
-A **Flood Hazard Outlook (FHO) verification** toolkit that builds three GeoPackages from public NWS/IEM sources (or local FHO zip files), then serves a Flask dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
+The **Flood Hazard Outlook (FHO) verification** toolkit that builds three GeoPackages from public NWS/IEM sources (or local FHO zip files), then serves a Flask dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
 
 ```mermaid
 flowchart LR
