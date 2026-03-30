@@ -4,10 +4,10 @@ Unified FHO Evaluation Pipeline
 Downloads and processes FHO, LSR, and WWA data into GeoPackage files.
 
 Usage:
-    python pipeline.py                          # Full run, all years 2022-2025
+    python pipeline.py                          # Full run, all years 2022-present
     python pipeline.py --years 2024 2025        # Specific years only
     python pipeline.py --only fho               # Only process FHO dataset
-    python pipeline.py --update                 # Incremental update from last state
+    python pipeline.py --full                   # Force complete re-run (ignore saved state)
     python pipeline.py --fho-source /path/to/zips  # Use local FHO zip directory (instead of NWC)
 """
 
@@ -176,7 +176,7 @@ def http_download_to_file(url, dest_path, *, timeout=300, desc=None):
             with open(dest_path, "wb") as f, tqdm(
                 total=total, unit="B", unit_scale=True, unit_divisor=1024,
                 desc=desc or os.path.basename(dest_path),
-                disable=total == 0,
+                disable=_NO_TTY or total == 0,
             ) as pbar:
                 for chunk in r.iter_content(chunk_size=1024 * 256):
                     f.write(chunk)
@@ -705,7 +705,7 @@ def _wwa_monthly_report(gdf, year):
 def process_fho(years, output_path, state, update_mode=False):
     """Download + process all FHO data → fho_all.gpkg"""
     counters = {"downloaded": 0, "skipped_404": 0, "failed": 0, "processed": 0,
-                "failed_items": [], "year_counts": {}, "latest_record": None}
+                "failed_items": [], "year_counts": {}, "year_mode_404s": {}, "latest_record": None}
 
     # Update-mode resume summary
     if update_mode and state.get("fho_last_date"):
@@ -737,6 +737,8 @@ def process_fho(years, output_path, state, update_mode=False):
             all_rows = []
             last_good_date = None
             iter_failures = 0
+            iter_404s = 0
+            _iter_downloaded = 0  # per year/mode count (counters["downloaded"] is the grand total)
 
             if _FHO_SOURCE == "nwc":
                 # Build NWC URLs
@@ -763,6 +765,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         _done += 1
                         if status == "404":
                             counters["skipped_404"] += 1
+                            iter_404s += 1
                         elif status == "failed":
                             counters["failed"] += 1
                             iter_failures += 1
@@ -770,6 +773,7 @@ def process_fho(years, output_path, state, update_mode=False):
                             counters["failed_items"].append(f"FHO {year} {mode.upper()} {d_str or fname}")
                         else:
                             counters["downloaded"] += 1
+                            _iter_downloaded += 1
                             try:
                                 rows = process_fho_zip_bytes(data, fname, mode)
                                 all_rows.extend(rows)
@@ -783,9 +787,9 @@ def process_fho(years, output_path, state, update_mode=False):
                         if _NO_TTY and (_done % _milestone == 0 or _done == len(urls)):
                             print(f"  FHO {year} {mode.upper()}: {_done}/{len(urls)}"
                                   f" ({_done/len(urls)*100:.0f}%)  "
-                                  f"got={counters['downloaded']}  "
-                                  f"404s={counters['skipped_404']}  "
-                                  f"failed={counters['failed']}")
+                                  f"got={_iter_downloaded}  "
+                                  f"404s={iter_404s}  "
+                                  f"failed={iter_failures}")
 
             else:
                 # Local directory mode
@@ -827,6 +831,7 @@ def process_fho(years, output_path, state, update_mode=False):
                             iter_failures += 1
                         else:
                             counters["downloaded"] += 1
+                            _iter_downloaded += 1
                             try:
                                 rows = process_fho_zip_bytes(data, fname, mode)
                                 all_rows.extend(rows)
@@ -840,7 +845,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         if _NO_TTY and (_done % _milestone == 0 or _done == len(year_zips)):
                             print(f"  FHO {year} {mode.upper()} (local): {_done}/{len(year_zips)}"
                                   f" ({_done/len(year_zips)*100:.0f}%)  "
-                                  f"loaded={counters['downloaded']}  "
+                                  f"loaded={_iter_downloaded}  "
                                   f"rows so far={len(all_rows)}  "
                                   f"failed={counters['failed']}")
 
@@ -849,9 +854,9 @@ def process_fho(years, output_path, state, update_mode=False):
                 continue
 
             print(f"  ✓ FHO {year} {mode.upper()} downloads done  —  "
-                  f"{counters['downloaded']} files loaded  |  "
-                  f"{counters['skipped_404']} not found (404)  |  "
-                  f"{counters['failed']} failed")
+                  f"{_iter_downloaded} files loaded  |  "
+                  f"{iter_404s} not found (404)  |  "
+                  f"{iter_failures} failed")
             print(f"  Building GeoDataFrame from {len(all_rows):,} raw rows...")
             gdf = gpd.GeoDataFrame(all_rows, geometry="geometry", crs=CRS_TARGET)
 
@@ -899,10 +904,15 @@ def process_fho(years, output_path, state, update_mode=False):
             print(f"  ✓ Saved {layer}  ({len(base_for_yc):,} base polygons"
                   f" + {lm_count:,} Limited_merged synthetic rows)")
 
-            # Accumulate year_counts (base polygons only) and latest_record
+            # Accumulate year_counts (base polygons only), coverage breakdown, and latest_record
             counters["year_counts"][year] = (
                 counters["year_counts"].get(year, 0) + len(base_for_yc)
             )
+            counters["year_mode_404s"][f"{year}_{mode}"] = {
+                "downloaded": _iter_downloaded,
+                "skipped_404": iter_404s,
+                "failed": iter_failures,
+            }
             if last_good_date:
                 lr = datetime.strptime(last_good_date, "%Y%m%d").date()
                 if counters["latest_record"] is None or lr > counters["latest_record"]:
@@ -1240,16 +1250,29 @@ def _print_config_banner(args, datasets, update_mode, mode_source):
     ds_str    = "  ".join(d.upper() for d in datasets)
 
     W = 62
+
+    def _row(label, value):
+        """Print a banner row, wrapping long values onto continuation lines."""
+        avail = W - 18  # characters available after "║  LABEL         : "
+        lines = []
+        while len(value) > avail:
+            lines.append(value[:avail])
+            value = value[avail:]
+        lines.append(value)
+        print(f"║  {label:<14}: {lines[0]:<{avail}}║")
+        for cont in lines[1:]:
+            print(f"║  {'':14}  {cont:<{avail}}║")
+
     bar = "═" * W
     print(f"\n╔{bar}╗")
     print(f"║{'FHO EVALUATION PIPELINE':^{W}}║")
     print(f"╠{bar}╣")
-    print(f"║  {'Started':<14}: {datetime.now().strftime('%Y-%m-%d  %H:%M:%S'):<{W-18}}║")
-    print(f"║  {'Datasets':<14}: {ds_str:<{W-18}}║")
-    print(f"║  {'Years':<14}: {years_str:<{W-18}}║")
-    print(f"║  {'FHO source':<14}: {src_label:<{W-18}}║")
-    print(f"║  {'Mode':<14}: {mode_label:<{W-18}}║")
-    print(f"║  {'Workers':<14}: {args.workers:<{W-18}}║")
+    _row("Started",    datetime.now().strftime('%Y-%m-%d  %H:%M:%S'))
+    _row("Datasets",   ds_str)
+    _row("Years",      years_str)
+    _row("FHO source", src_label)
+    _row("Mode",       mode_label)
+    _row("Workers",    str(args.workers))
     print(f"╚{bar}╝\n")
 
 
@@ -1394,6 +1417,28 @@ def _print_yoy_table(all_counters, years):
     print(f"  {'─'*6}  {'─'*13}  {'─'*12}  {'─'*14}")
     print(f"  {'TOTAL':<7} {fho_tot:>13,} {lsr_tot:>12,} {wwa_tot:>14,}")
     print(f"{sep}\n")
+
+    # FHO 404 coverage breakdown (only when FHO was processed)
+    fho_404s = all_counters.get("fho", {}).get("year_mode_404s", {})
+    if fho_404s:
+        sep2 = "  " + "─" * 54
+        print(f"{sep2}")
+        print(f"  FHO DOWNLOAD COVERAGE  (404 = no file published that day)")
+        print(sep2)
+        print(f"  {'Year/Mode':<12} {'Downloaded':>12} {'404s (gap)':>12} {'Failed':>8}")
+        print(f"  {'─'*12}  {'─'*12}  {'─'*12}  {'─'*8}")
+        for yr in all_years:
+            for mode in ("am", "pm"):
+                key = f"{yr}_{mode}"
+                stats = fho_404s.get(key)
+                if stats is None:
+                    continue
+                n_dl   = stats["downloaded"]
+                n_404  = stats["skipped_404"]
+                n_fail = stats["failed"]
+                fail_str = f"{n_fail:>8,}" if n_fail else "      —"
+                print(f"  {yr} {mode.upper():<8} {n_dl:>12,}  {n_404:>12,}  {fail_str}")
+        print(f"{sep2}\n")
 
 
 def _print_failure_details(all_counters):

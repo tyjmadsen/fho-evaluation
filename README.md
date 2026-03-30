@@ -81,11 +81,11 @@ Place these next to `app.py` (or mount them there in Docker):
 
 | File | Contents |
 |------|----------|
-| `fho_all.gpkg` | Layers `fho_{year}_{am\|pm}` (e.g. `fho_2024_am`). Includes synthetic **`Limited_merged`** polygons from the pipeline. CRS in file: **EPSG:5070** (app reprojects for the map). |
+| `fho_all.gpkg` | Layers `fho_{year}_{am\|pm}` for **2022 through the current calendar year** (e.g. `fho_2024_am`). Each layer includes synthetic **`Limited_merged`** rows (union of Limited + Considerable + Catastrophic per issuance group). Key columns: `polygon_id`, `issuance_date` (YYYYMMDD), `issuance_time` (AM/PM), `forecast_period` (1-3/4-7/1-7), `impact_level`, `valid_start`, `valid_end`, `area_sqkm`, `area_bin`, `source_category` (raw CATEGORY string, for debugging Unknown rows). Rows with `CATEGORY = "no area"` (placeholder issuances with no actual hazard polygon) are **excluded** by the pipeline. CRS in file: **EPSG:5070** (app reprojects for the map). |
 | `LSRs_flood_allYears.gpkg` | Layer **`LSRs_flood_allYears`**: point LSRs; flood / flash flood only. Expected columns include `VALID`, `LAT`, `LON`, `EVENT`, `REMARKS`, `geometry`, etc. CRS: **EPSG:5070**. |
-| `flood_warnings_all.gpkg` | Layers `wwa_{year}`. Flood polygons (`PHENOM` FF/FL), with **`DAMAGTAG`** for IBW damage tags when present. CRS: **EPSG:5070**. |
+| `flood_warnings_all.gpkg` | Layers `wwa_{year}` for **2022 through the current calendar year**. Flood polygons (`PHENOM` FF/FL, polygon geometry only), with **`DAMAGTAG`** (CONSIDERABLE/CATASTROPHIC/empty) for IBW damage-tag verification. CRS: **EPSG:5070**. |
 
-The app watches file modification times and **reloads** when GeoPackages change (with backoff if a reload fails).
+The app watches file modification times and **reloads** when GeoPackages change (with backoff if a reload fails). It auto-discovers all years present in the GeoPackages — no code change needed when a new year is added.
 
 ---
 
@@ -130,7 +130,7 @@ When you run **all three** datasets in one command (no `--only`), the pipeline *
 - **`nwc`** (default) — zips from National Weather Center operations, e.g.  
   `https://ops.nwc.nws.noaa.gov/products/{YEAR}/final/FHO/shpzip/fho_{YYYYMMDD}_{am|pm}_final.zip`  
   Missing dates (weekends/holidays, archive gaps) are normal; the pipeline counts **404** responses separately in the run summary.
-- **Filesystem path** — directory containing FHO zips named like `fho_YYYYMMDD_am_final.zip` / `fho_YYYYMMDD_pm_final.zip`. The pipeline searches the directory and, if needed, **subdirectories** (`**` glob). Use this when you maintain a mirror of the NWC archive (for example files synced from shared storage) instead of hitting the live server.
+- **Filesystem path** — directory containing FHO zips named like `fho_YYYYMMDD_am_final.zip` / `fho_YYYYMMDD_pm_final.zip` or `fho_national_YYYYMMDD_am_final.zip` (early-2022 naming). The pipeline searches the directory and **all subdirectories** (`**` glob), so nested layouts (e.g. a `national/` subfolder for pre-June 2022 files) are handled automatically. Use this when you maintain a local mirror of the NWC archive instead of hitting the live server.
 
 ### State file
 
@@ -209,20 +209,26 @@ The compose file **bind-mounts** the three GeoPackages from the parent directory
 
 ## Troubleshooting
 
-1. **`Data not loaded` / missing layers**  
+1. **`Data not loaded` / missing layers**
    Ensure all three `.gpkg` files exist beside `app.py` and layer names match expectations: `fho_{year}_{am|pm}`, **`LSRs_flood_allYears`** (LSR layer), and `wwa_{year}`. Run `python pipeline.py`.
 
-2. **Wrong Python / missing packages after `pip install`**  
+2. **Wrong Python / missing packages after `pip install`**
    Use `python -m pip install -r requirements.txt` with the **same** `python` (or `py -3.x`) you use to run `pipeline.py` and `app.py`.
 
-3. **Slow first load**  
+3. **Slow first load**
    Reading large GeoPackages and building spatial indexes takes time. Subsequent requests benefit from in-memory caches.
 
-4. **Port 5000 in use**  
+4. **Port 5000 in use**
    Stop the other process or change the port in Flask / compose port mapping.
 
-5. **Pipeline SSL or 404 noise**  
+5. **Pipeline SSL or 404 noise**
    NWC 404s for missing issuance days are expected. Persistent SSL errors on corporate networks may require proxy settings outside the scope of this README.
+
+6. **FHO polygon counts lower than expected / months showing `<< NO DATA`**
+   Two expected causes: (a) your local archive is incomplete for that year/month — the monthly summary prints `Archive range: YYYY-MM-DD → YYYY-MM-DD` to show exactly what's on disk; (b) some issuance days had `CATEGORY = "no area"` (a NWS placeholder meaning no flood hazard was outlined) — these rows are intentionally excluded. The `source_category` column in the GeoPackage retains the raw string for any rows that parsed to `Unknown` impact level, useful for diagnosing new unparseable CATEGORY values.
+
+7. **IBW Quick Select shows unexpected events**
+   The "high-impact FFWs without FHO coverage" list compares FFW issuance dates against FHO issuance dates. If the list appears empty or wrong after a fresh pipeline run, try restarting the Flask app so it reloads the updated GeoPackages.
 
 ---
 

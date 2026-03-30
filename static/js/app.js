@@ -1146,6 +1146,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 function loadHighImpactEvents() {
+    Object.keys(dateEventMap).forEach(k => delete dateEventMap[k]);
     return fetch('/api/high-impact-events')
         .then(response => {
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);

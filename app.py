@@ -213,30 +213,28 @@ def gdf_to_feature_collection(gdf, popup_builder=None, simplify=True):
 
 def _lsr_popup(props):
     """Inject popup_content for LSR features."""
-    if props.get('EVENT') or props.get('TYPETEXT'):
-        event_type = _safe_escape(props.get('EVENT') or props.get('TYPETEXT', 'Unknown'))
-        remarks = _safe_escape(props.get('REMARKS') or props.get('REMARK', 'None'))
-        props['popup_content'] = (
-            f"<b>LSR Details:</b><br>"
-            f"Event: {event_type}<br>"
-            f"Location: {_safe_escape(props.get('CITY', 'Unknown'))}, {_safe_escape(props.get('STATE', 'Unknown'))}<br>"
-            f"Time: {_safe_escape(props.get('VALID', 'Unknown'))}<br>"
-            f"Source: {_safe_escape(props.get('SOURCE', 'Unknown'))}<br>"
-            f"Remarks: {remarks}"
-        )
+    event_type = _safe_escape(props.get('EVENT') or props.get('TYPETEXT') or 'Unknown')
+    remarks = _safe_escape(props.get('REMARKS') or props.get('REMARK') or 'None')
+    props['popup_content'] = (
+        f"<b>LSR Details:</b><br>"
+        f"Event: {event_type}<br>"
+        f"Location: {_safe_escape(props.get('CITY', 'Unknown'))}, {_safe_escape(props.get('STATE', 'Unknown'))}<br>"
+        f"Time: {_safe_escape(props.get('VALID', 'Unknown'))}<br>"
+        f"Source: {_safe_escape(props.get('SOURCE', 'Unknown'))}<br>"
+        f"Remarks: {remarks}"
+    )
 
 
 def _ffw_popup(props):
     """Inject popup_content for FFW features."""
-    if props.get('PHENOM') in ('FF', 'FL'):
-        tag = props.get('DAMAGTAG') or 'No Tag'
-        props['popup_content'] = (
-            f"<b>Flood Warning Details:</b><br>"
-            f"Issued: {_safe_escape(props.get('ISSUED', 'Unknown'))}<br>"
-            f"Expired: {_safe_escape(props.get('EXPIRED', 'Unknown'))}<br>"
-            f"Phenomena: {_safe_escape(props.get('PHENOM', 'Unknown'))}<br>"
-            f"Impact: {_safe_escape(tag)}"
-        )
+    tag = props.get('DAMAGTAG') or 'No Tag'
+    props['popup_content'] = (
+        f"<b>Flood Warning Details:</b><br>"
+        f"Issued: {_safe_escape(props.get('ISSUED', 'Unknown'))}<br>"
+        f"Expired: {_safe_escape(props.get('EXPIRED', 'Unknown'))}<br>"
+        f"Phenomena: {_safe_escape(props.get('PHENOM', 'Unknown'))}<br>"
+        f"Impact: {_safe_escape(tag)}"
+    )
 
 
 def load_layer(args):
@@ -269,7 +267,7 @@ def load_data():
         return DATA_CACHE['fho_areas'], DATA_CACHE['lsrs'], DATA_CACHE['ffws']
 
     print("Loading FHO data...")
-    years = range(2022, 2026)  # 2022-2025, aligned with pipeline.py
+    years = range(2022, dt_date.today().year + 1)  # 2022 through current year
     periods = ['am', 'pm']
     
     # Parallel loading of FHO layers
@@ -382,7 +380,12 @@ def _build_high_impact_events(fho_df, ffws_df):
         subset = fho_df[fho_df['impact_level'] == level]
         if subset.empty:
             continue
-        dates = subset['issuance_date'] if 'issuance_date' in subset.columns else subset['valid_start'].dt.strftime('%Y-%m-%d')
+        if 'issuance_date' in subset.columns:
+            # issuance_date stored as "YYYYMMDD" — normalise to "YYYY-MM-DD" for FFW comparison
+            raw = subset['issuance_date'].astype(str)
+            dates = pd.to_datetime(raw, format='%Y%m%d', errors='coerce').dt.strftime('%Y-%m-%d')
+        else:
+            dates = subset['valid_start'].dt.strftime('%Y-%m-%d')
         unique = pd.DataFrame({
             'date': dates.values,
             'issuance': subset['issuance_time'].values,
@@ -479,7 +482,7 @@ def get_available_dates():
     try:
         _fho = _get_datasets()[0]
         if _fho is None:
-            return jsonify([])
+            return jsonify({'error': 'Data not loaded. Check GeoPackage files.'}), 500
         
         dates = sorted(d for d in _fho['valid_date'].unique()
                        if d is not None and not (isinstance(d, float) and np.isnan(d)))

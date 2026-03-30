@@ -186,75 +186,77 @@ function _syncLegendVisibility() {
     });
 }
 
-fetch('/api/available-dates')
-    .then(response => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-    })
-    .then(dates => {
-        const datePicker = document.getElementById('issuanceDate');
-        const restored = ibwRestoreState();
-        if (!restored && dates.length > 0) {
-            datePicker.value = dates[dates.length - 1];
-        }
-        updateMap();
-    })
-    .catch(error => {
-        console.error('Failed to load available dates:', error);
-        showError('Failed to load available dates.');
-    });
-
-fetch('/api/high-impact-events')
-    .then(response => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response.json();
-    })
-    .then(data => {
-        const quickSelect = document.getElementById('quickSelect');
-        if (!quickSelect) return;
-        const groups = quickSelect.getElementsByTagName('optgroup');
-
-        for (let group of groups) {
-            group.innerHTML = '';
-        }
-
-        const conEvents = data.considerable_fho || [];
-        const catEvents = data.catastrophic_fho || [];
-        const ffwEvents = data.high_impact_ffws || [];
-
-        const fmtDate = (d) => { const p = d.split('-'); return `${p[1]}/${p[2]}/${p[0].slice(2)}`; };
-
-        conEvents.forEach(event => {
-            const option = document.createElement('option');
-            option.value = JSON.stringify(event);
-            option.textContent = `${fmtDate(event.date)} ${event.issuance} D${event.period}`;
-            groups[0].appendChild(option);
+document.addEventListener('DOMContentLoaded', () => {
+    fetch('/api/available-dates')
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
+        .then(dates => {
+            const datePicker = document.getElementById('issuanceDate');
+            const restored = ibwRestoreState();
+            if (!restored && dates.length > 0) {
+                datePicker.value = dates[dates.length - 1];
+            }
+            updateMap();
+        })
+        .catch(error => {
+            console.error('Failed to load available dates:', error);
+            showError('Failed to load available dates.');
         });
 
-        catEvents.forEach(event => {
-            const option = document.createElement('option');
-            option.value = JSON.stringify(event);
-            option.textContent = `${fmtDate(event.date)} ${event.issuance} D${event.period}`;
-            groups[1].appendChild(option);
+    fetch('/api/high-impact-events')
+        .then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            return response.json();
+        })
+        .then(data => {
+            const quickSelect = document.getElementById('quickSelect');
+            if (!quickSelect) return;
+            const groups = quickSelect.getElementsByTagName('optgroup');
+
+            for (let group of groups) {
+                group.innerHTML = '';
+            }
+
+            const conEvents = data.considerable_fho || [];
+            const catEvents = data.catastrophic_fho || [];
+            const ffwEvents = data.high_impact_ffws || [];
+
+            const fmtDate = (d) => { const p = d.split('-'); return `${p[1]}/${p[2]}/${p[0].slice(2)}`; };
+
+            conEvents.forEach(event => {
+                const option = document.createElement('option');
+                option.value = JSON.stringify(event);
+                option.textContent = `${fmtDate(event.date)} ${event.issuance} D${event.period}`;
+                groups[0].appendChild(option);
+            });
+
+            catEvents.forEach(event => {
+                const option = document.createElement('option');
+                option.value = JSON.stringify(event);
+                option.textContent = `${fmtDate(event.date)} ${event.issuance} D${event.period}`;
+                groups[1].appendChild(option);
+            });
+
+            ffwEvents.forEach(event => {
+                const option = document.createElement('option');
+                option.value = JSON.stringify(event);
+                option.textContent = `${fmtDate(event.date)} ${event.tag}`;
+                groups[2].appendChild(option);
+            });
+
+            groups[0].label = `Considerable (${conEvents.length})`;
+            groups[1].label = `Catastrophic (${catEvents.length})`;
+            groups[2].label = `FFWs — No FHO (${ffwEvents.length})`;
+
+            updateEventStepButtons();
+        })
+        .catch(error => {
+            console.error('Failed to load high-impact events:', error);
+            showError('Failed to load Quick Select events.');
         });
-
-        ffwEvents.forEach(event => {
-            const option = document.createElement('option');
-            option.value = JSON.stringify(event);
-            option.textContent = `${fmtDate(event.date)} ${event.tag}`;
-            groups[2].appendChild(option);
-        });
-
-        groups[0].label = `Considerable (${conEvents.length})`;
-        groups[1].label = `Catastrophic (${catEvents.length})`;
-        groups[2].label = `FFWs — No FHO (${ffwEvents.length})`;
-
-        updateEventStepButtons();
-    })
-    .catch(error => {
-        console.error('Failed to load high-impact events:', error);
-        showError('Failed to load Quick Select events.');
-    });
+});
 
 document.getElementById('issuanceDate')?.addEventListener('change', () => {
     const qs = document.getElementById('quickSelect');
