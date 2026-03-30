@@ -8,6 +8,7 @@ const config = {
     },
     colors: {
         hit: '#059669',
+        lsrHit: '#0d9488',
         miss: '#dc2626',
         fho: '#1e40af',
         catastrophic: '#b91c1c',
@@ -22,10 +23,10 @@ const config = {
             fillOpacity: 0.15
         },
         lsrsHit: {
-            color: '#059669',
-            weight: 2,
-            opacity: 0.9,
-            fillOpacity: 0.6
+            color: '#0f766e',
+            weight: 1,
+            opacity: 1,
+            fillOpacity: 0.85
         },
         lsrsMiss: {
             color: '#dc2626',
@@ -59,10 +60,10 @@ const config = {
         }
     },
     pointMarkers: {
-        radius: 5,
+        radius: 3.5,
         weight: 1,
         opacity: 1,
-        fillOpacity: 0.8
+        fillOpacity: 0.9
     }
 };
 
@@ -159,8 +160,8 @@ function createLSRMarker(feature, latlng, isHit) {
     if (isHit) {
         marker = L.circleMarker(latlng, {
             ...config.pointMarkers,
-            fillColor: config.colors.hit,
-            color: '#065f46',
+            fillColor: config.colors.lsrHit,
+            color: '#0f766e',
             pane
         });
     } else {
@@ -168,7 +169,7 @@ function createLSRMarker(feature, latlng, isHit) {
             icon: L.divIcon({
                 html: '✕',
                 className: 'lsr-miss-marker',
-                iconSize: [12, 12]
+                iconSize: [10, 10]
             }),
             pane
         });
@@ -255,7 +256,7 @@ function initCharts() {
         data: {
             labels: [''],
             datasets: [
-                { label: 'LSR Inside', data: [0], backgroundColor: '#059669' },
+                { label: 'LSR Inside', data: [0], backgroundColor: config.colors.lsrHit },
                 { label: 'FFW Inside', data: [0], backgroundColor: '#10b981' },
                 { label: 'LSR Outside', data: [0], backgroundColor: '#dc2626' },
                 { label: 'FFW Outside', data: [0], backgroundColor: '#f87171' }
@@ -490,7 +491,7 @@ function createPopupContent(type, feature, isHit = null) {
                 </div>`;
         }
         case 'LSR': {
-            const statusColor = isHit ? hitColor : missColor;
+            const statusColor = isHit ? config.colors.lsrHit : missColor;
             const statusLabel = isHit ? 'HIT' : 'MISS';
             const eventType = escapeHtml(feature.properties.EVENT || 'Unknown');
             return `
@@ -720,7 +721,7 @@ function renderMapLayers(data, { fitView = false } = {}) {
                 const statusLabel = p.verified ? 'VERIFIED' : 'UNVERIFIED';
                 const eventBar = p.hit_count > 0
                     ? `<div style="margin-top:4px;display:flex;gap:4px;align-items:center;">
-                        <div style="background:${config.colors.hit};height:6px;border-radius:3px;flex:${p.lsr_hits}" title="${p.lsr_hits} LSRs"></div>
+                        <div style="background:${config.colors.lsrHit};height:6px;border-radius:3px;flex:${p.lsr_hits}" title="${p.lsr_hits} LSRs"></div>
                         <div style="background:#10b981;height:6px;border-radius:3px;flex:${p.ffw_hits}" title="${p.ffw_hits} FFWs"></div>
                        </div>
                        <div style="font-size:10px;color:#6b7280;margin-top:2px;">${p.lsr_hits} LSR + ${p.ffw_hits} FFW = ${p.hit_count} events</div>`

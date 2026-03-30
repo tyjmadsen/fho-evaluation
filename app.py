@@ -1127,7 +1127,8 @@ def get_ibw_stats():
                     'hits': num_hits,
                     'misses': num_misses,
                     'ffws_no_tag': num_no_tag,
-                    'total_ffws': num_hits + num_misses + num_no_tag,
+                    # All FFW polygons in the verification window (FF/FL), independent of impact toggle
+                    'total_ffws': len(ffws_valid),
                     'total_lsrs': len(lsrs_valid)
                 },
                 'geometries': map_data,

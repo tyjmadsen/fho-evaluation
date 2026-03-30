@@ -686,13 +686,13 @@ body {
 
 .lsr-miss-marker {
     color: #dc2626;
-    font-size: 12px;
+    font-size: 10px;
     font-weight: bold;
     text-align: center;
-    line-height: 12px;
+    line-height: 10px;
     text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.5);
-    margin-left: -6px;
-    margin-top: -6px;
+    margin-left: -5px;
+    margin-top: -5px;
 }
 
 /* Leaflet popup styling */

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IBW Validation Dashboard</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect rx='6' width='32' height='32' fill='%232563eb'/%3E%3Cpath d='M8 22c2-4 4-8 8-8s6 4 8 8' stroke='white' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='10' r='3' fill='white'/%3E%3C/svg%3E">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
@@ -126,8 +126,8 @@
                         <span class="ibw-stat-label">No Tag</span>
                         <span class="ibw-stat-value" id="noTagValue">-</span>
                     </div>
-                    <div class="ibw-stat-row">
-                        <span class="ibw-stat-label">Total FFWs</span>
+                    <div class="ibw-stat-row" title="All flash-flood warnings (FF/FL polygons) overlapping the verification window — unchanged when switching Considerable vs Catastrophic">
+                        <span class="ibw-stat-label">Total FFWs <span class="text-muted" style="font-size:0.7rem;font-weight:400;">(window)</span></span>
                         <span class="ibw-stat-value" id="totalFfwsValue">-</span>
                     </div>
                     <div class="ibw-stat-row">
@@ -174,9 +174,9 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7/turf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@turf/turf@7.3.4/turf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="{{ url_for('static', filename='js/shared.js') }}"></script>
     <script src="{{ url_for('static', filename='js/ibw.js') }}"></script>

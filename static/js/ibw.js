@@ -437,7 +437,9 @@ function ibwCacheKey(filters) {
     return `${filters.issuance_date}_${filters.issuance}_${filters.forecast_period}_${filters.impact_level}`;
 }
 
-function _renderIbwData(data) {
+let _lastIbwRenderedDate = null;
+
+function _renderIbwData(data, { fitView = false } = {}) {
     const emptyState = document.getElementById('mapEmptyState');
     const hasGeometries = data.geometries && (
         data.geometries.limited?.features?.length ||
@@ -589,12 +591,14 @@ function _renderIbwData(data) {
             }
         });
 
-        if (bounds && bounds.isValid()) {
-            map.fitBounds(bounds);
-        } else {
-            map.setView(CONUS_CENTER, CONUS_ZOOM);
+        if (fitView) {
+            if (bounds && bounds.isValid()) {
+                map.fitBounds(bounds);
+            } else {
+                map.setView(CONUS_CENTER, CONUS_ZOOM);
+            }
         }
-    } else {
+    } else if (fitView) {
         map.setView(CONUS_CENTER, CONUS_ZOOM);
     }
     ibwPushState();
@@ -633,11 +637,16 @@ function _doUpdateMap(signal) {
         return;
     }
 
+    const dateKey = filters.issuance_date;
+    const dateChanged = dateKey !== _lastIbwRenderedDate;
+    _lastIbwRenderedDate = dateKey;
+    const renderOpts = { fitView: dateChanged };
+
     const cacheKey = ibwCacheKey(filters);
     if (ibwStatsCache.has(cacheKey)) {
         activeLayers.forEach(lyr => { if (lyr) map.removeLayer(lyr); });
         activeLayers = [];
-        _renderIbwData(ibwStatsCache.get(cacheKey));
+        _renderIbwData(ibwStatsCache.get(cacheKey), renderOpts);
         return;
     }
 
@@ -665,7 +674,7 @@ function _doUpdateMap(signal) {
 
         ibwStatsCache.set(cacheKey, data);
         ibwManageCacheSize();
-        _renderIbwData(data);
+        _renderIbwData(data, renderOpts);
     })
     .catch(error => {
         if (error.name === 'AbortError') return;

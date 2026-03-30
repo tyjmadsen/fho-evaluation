@@ -39,13 +39,13 @@ flowchart LR
 
 ### 1. Install dependencies
 
-Requires **Python 3.13+**.
+Use **Python 3.13** for installs. Geo stack wheels (Fiona, etc.) track CPython releases; **3.14+** often has no pre-built wheels yet, so `pip` may try to compile GDAL and fail unless you have a full GDAL dev setup.
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If Fiona/GDAL fails to install, ensure you're on a Python version that has binary wheels for your platform (3.13 is a safe choice).
+**Windows with multiple Pythons:** if `python` points at 3.14, run `py -3.13 -m pip install -r requirements.txt` and `py -3.13 app.py` / `py -3.13 pipeline.py` instead.
 
 ### 2. Build the data
 
@@ -186,14 +186,14 @@ Responses are cached server-side (LRU, max 32 entries per endpoint) and client-s
 | `static/js/shared.js` | Shared helpers (error display, segmented controls, date formatting) |
 | `static/css/styles.css` | Shared CSS (custom properties, popup-pager, responsive layout) |
 
-**Tech stack:** Flask, GeoPandas, Pandas, NumPy, Shapely, Fiona, PyProj, requests, tqdm. Frontend: Leaflet 1.9, Bootstrap 5, Chart.js 4 (CDN).
+**Tech stack:** Flask 3, GeoPandas 1+, Pandas 2.2+, NumPy, Shapely 2, Fiona, PyProj, requests, tqdm. Frontend (CDN): Leaflet 1.9.4, Bootstrap 5.3.8, Chart.js 4.5.1, html2canvas 1.4.1, Turf.js 7.3.4 (IBW page).
 
 ---
 
 ## Troubleshooting
 
 1. **`Data not loaded` / missing layers** — Ensure all three `.gpkg` files exist beside `app.py` with the expected layer names (`fho_{year}_{am|pm}`, `LSRs_flood_allYears`, `wwa_{year}`). Run `python pipeline.py`.
-2. **Wrong Python / missing packages** — Make sure `pip install` and your run commands use the same Python interpreter.
+2. **Wrong Python / missing packages** — Use the same interpreter for `pip` and `run`. If install fails on **Fiona** with “GDAL API version” / `gdal-config`, switch to **Python 3.13** (or install OS-level GDAL build tools — harder on Windows).
 3. **Slow first load** — Reading large GeoPackages and building spatial indexes takes time. Subsequent requests benefit from in-memory caches.
 4. **Port 5000 in use** — Stop the other process or change the port in Flask config.
 5. **Pipeline SSL or 404 noise** — NWC 404s for missing issuance days are expected. Persistent SSL errors on corporate networks may require proxy configuration.
