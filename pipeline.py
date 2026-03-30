@@ -8,9 +8,7 @@ Usage:
     python pipeline.py --years 2024 2025        # Specific years only
     python pipeline.py --only fho               # Only process FHO dataset
     python pipeline.py --update                 # Incremental update from last state
-    python pipeline.py --fho-source gdrive      # Download FHO from Google Drive
-    python pipeline.py --fho-source /path/to/zips  # Use local FHO zip directory
-    python pipeline.py --browser chrome         # Use Chrome cookies (default: edge)
+    python pipeline.py --fho-source /path/to/zips  # Use local FHO zip directory (instead of NWC)
 """
 
 import argparse
@@ -68,18 +66,14 @@ FHO_HOST = "https://ops.nwc.nws.noaa.gov"
 LSR_API = "https://mesonet.agron.iastate.edu/geojson/lsr.php"
 WWA_PICKUP = "https://mesonet.agron.iastate.edu/pickup/wwa"
 
-# Google Drive folder containing FHO shapefiles (fho/shpzip/*.zip)
-GDRIVE_FOLDER_ID = "1wEyZUUs0L090CIxCN9wk45kzBo33pX0I"
-
 STATE_FILE = "pipeline_state.json"
 MAX_WORKERS = 6
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds, doubled each retry
 LSR_CHUNK_DAYS = 90
 
-# FHO source mode — set by CLI args
-_FHO_SOURCE = "nwc"        # "nwc", "gdrive", or a local directory path
-_BROWSER_FOR_COOKIES = "edge"  # "edge" or "chrome"
+# FHO source mode — set by CLI args ("nwc" or a local directory path)
+_FHO_SOURCE = "nwc"
 
 
 def _set_max_workers(n):
@@ -196,188 +190,6 @@ def http_download_to_file(url, dest_path, *, timeout=300, desc=None):
             log.debug("Download retry %d/%d in %ds: %s", attempt, MAX_RETRIES, wait, url)
             time.sleep(wait)
     return False
-
-
-# ---------------------------------------------------------------------------
-# Google Drive helpers
-# ---------------------------------------------------------------------------
-
-def _get_gdrive_session():
-    """Create a requests session with browser cookies for Google Drive auth."""
-    try:
-        import browser_cookie3
-    except ImportError:
-        log.error("browser-cookie3 is required for Google Drive downloads. "
-                  "Install with: pip install browser-cookie3")
-        sys.exit(1)
-
-    cookie_loaders = {
-        "edge": browser_cookie3.edge,
-        "chrome": browser_cookie3.chrome,
-        "firefox": browser_cookie3.firefox,
-    }
-    loader = cookie_loaders.get(_BROWSER_FOR_COOKIES)
-    if not loader:
-        log.error("Unsupported browser: %s (use edge, chrome, or firefox)", _BROWSER_FOR_COOKIES)
-        sys.exit(1)
-
-    try:
-        cj = loader(domain_name=".google.com")
-    except Exception as exc:
-        log.error("Failed to load cookies from %s: %s", _BROWSER_FOR_COOKIES, exc)
-        log.error("Make sure you're logged into Google Drive in %s", _BROWSER_FOR_COOKIES)
-        sys.exit(1)
-
-    sess = requests.Session()
-    sess.cookies = cj
-    sess.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    })
-    return sess
-
-
-def _gdrive_list_folder(sess, folder_id):
-    """List all files in a Google Drive folder using the web interface.
-
-    Uses the internal Google Drive web endpoint that works with browser cookies,
-    since the REST API requires OAuth tokens.
-    Returns list of (file_id, filename, mimeType).
-    """
-    files = []
-    url = f"https://drive.google.com/drive/folders/{folder_id}"
-    resp = sess.get(url, timeout=30)
-    if resp.status_code != 200:
-        log.error("Could not access Google Drive folder (HTTP %d). "
-                  "Make sure you're logged in.", resp.status_code)
-        return []
-
-    # Drive embeds file data as JSON in the page source — extract IDs and names
-    # Pattern: file entries appear as arrays with [file_id, filename, ...] in the JS
-    text = resp.text
-
-    # Method 1: Parse from the embedded data in the page
-    # Google Drive embeds file metadata in a specific JS structure
-    id_name_pairs = re.findall(
-        r'\["([\w_-]{20,})",\s*"(fho_\d{8}_(?:am|pm)_final\.zip)"',
-        text
-    )
-    for fid, fname in id_name_pairs:
-        files.append((fid, fname, "application/zip"))
-
-    # Also look for folder entries
-    folder_pairs = re.findall(
-        r'\["([\w_-]{20,})",\s*"([^"]+?)",\s*"application/vnd\.google-apps\.folder"',
-        text
-    )
-    for fid, fname in folder_pairs:
-        files.append((fid, fname, "application/vnd.google-apps.folder"))
-
-    if not files:
-        # Method 2: Try gdown's folder listing as fallback
-        try:
-            import gdown
-            file_list = gdown.download_folder(
-                id=folder_id, skip_download=True,
-                quiet=True, remaining_ok=True
-            )
-            if file_list:
-                for f in file_list:
-                    files.append((f.id, f.name, ""))
-        except Exception as exc:
-            log.debug("gdown folder listing fallback failed: %s", exc)
-
-    return files
-
-
-def _gdrive_navigate_to_shpzip(sess, root_folder_id):
-    """Navigate folder → fho/fop → shpzip and return the shpzip folder ID."""
-    items = _gdrive_list_folder(sess, root_folder_id)
-    fho_folder = None
-    for fid, fname, mime in items:
-        if fname.lower() in ("fho", "fop") and "folder" in mime:
-            fho_folder = fid
-            break
-
-    if not fho_folder:
-        log.warning("Could not find 'fho' subfolder in Drive root — "
-                    "trying root as shpzip folder directly")
-        return root_folder_id
-
-    items = _gdrive_list_folder(sess, fho_folder)
-    for fid, fname, mime in items:
-        if fname.lower() == "shpzip" and "folder" in mime:
-            return fid
-
-    log.warning("Could not find 'shpzip' subfolder — using 'fho' folder directly")
-    return fho_folder
-
-
-def _gdrive_download_file(sess, file_id, filename):
-    """Download a single file from Google Drive. Returns bytes or None."""
-    url = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            resp = sess.get(url, stream=True, timeout=120)
-            if resp.status_code != 200:
-                log.debug("GDrive download %s returned %d", filename, resp.status_code)
-                return None
-            content = resp.content
-            if b"html" in content[:200].lower():
-                try:
-                    from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(content, "html.parser")
-                    form = soup.find("form", {"id": "download-form"})
-                    if form and "action" in form.attrs:
-                        inputs = form.find_all("input", {"type": "hidden"})
-                        params = {inp["name"]: inp["value"] for inp in inputs}
-                        redirect_url = form["action"]
-                        resp2 = sess.get(redirect_url, params=params, stream=True, timeout=120)
-                        if resp2.status_code == 200:
-                            content = resp2.content
-                    else:
-                        log.warning("GDrive returned HTML (not a download form) for %s", filename)
-                        return None
-                except ImportError:
-                    log.warning("GDrive returned HTML for %s but bs4 not installed", filename)
-                    return None
-            if not content[:4].startswith(b'PK'):
-                log.warning("GDrive download for %s is not a valid zip file (got %d bytes)", filename, len(content))
-                return None
-            return content
-        except requests.RequestException as exc:
-            if attempt == MAX_RETRIES:
-                log.warning("GDrive download failed after %d attempts: %s — %s",
-                            MAX_RETRIES, filename, exc)
-                return None
-            time.sleep(RETRY_BACKOFF * (2 ** (attempt - 1)))
-    return None
-
-
-def _get_gdrive_fho_zips(years, modes):
-    """Get list of (filename, file_id) for FHO zips matching the requested years/modes."""
-    sess = _get_gdrive_session()
-    shpzip_id = _gdrive_navigate_to_shpzip(sess, GDRIVE_FOLDER_ID)
-    all_files = _gdrive_list_folder(sess, shpzip_id)
-
-    if not all_files:
-        log.error("No files found in Google Drive shpzip folder")
-        return [], sess
-
-    log.info("Found %d files in Google Drive shpzip folder", len(all_files))
-
-    matching = []
-    for fid, fname, _ in all_files:
-        if not fname.endswith(".zip"):
-            continue
-        m = re.search(r"fho_(\d{4})\d{4}_(am|pm)", fname)
-        if not m:
-            continue
-        year = int(m.group(1))
-        mode = m.group(2)
-        if year in years and mode in modes:
-            matching.append((fname, fid))
-
-    return matching, sess
 
 
 # ---------------------------------------------------------------------------
@@ -662,21 +474,6 @@ def _download_single_fho(url):
     return fname, resp.content, "ok"
 
 
-_gdrive_thread_local = threading.local()
-
-
-def _download_single_fho_gdrive(args):
-    """Download a single FHO zip from Google Drive. Returns (filename, bytes) or (filename, None)."""
-    fname, file_id, template_sess = args
-    if not hasattr(_gdrive_thread_local, 'sess'):
-        s = requests.Session()
-        s.cookies = template_sess.cookies.copy()
-        s.headers.update(template_sess.headers)
-        _gdrive_thread_local.sess = s
-    data = _gdrive_download_file(_gdrive_thread_local.sess, file_id, fname)
-    return fname, data
-
-
 def _load_single_fho_local(zip_path):
     """Load a single FHO zip from local disk. Returns (filename, bytes) or (filename, None)."""
     fname = os.path.basename(zip_path)
@@ -917,21 +714,6 @@ def process_fho(years, output_path, state, update_mode=False):
             resume_d = (datetime.strptime(v, "%Y%m%d") + timedelta(days=1)).strftime("%Y-%m-%d")
             print(f"    {k}: last saved {v}  →  fetching from {resume_d}")
 
-    # Pre-fetch Google Drive file listing if needed (once for all years)
-    gdrive_sess = None
-    gdrive_file_map = {}  # fname -> file_id
-    if _FHO_SOURCE == "gdrive":
-        log.info("Connecting to Google Drive (using %s cookies)...", _BROWSER_FOR_COOKIES)
-        gdrive_files, gdrive_sess = _get_gdrive_fho_zips(years, ("am", "pm"))
-        if not gdrive_files:
-            log.error("No matching FHO files found on Google Drive")
-            counters["output_path"] = output_path
-            counters["file_size"] = os.path.getsize(output_path) if os.path.exists(output_path) else 0
-            return counters
-        for fname, fid in gdrive_files:
-            gdrive_file_map[fname] = fid
-        log.info("Found %d matching FHO zip files on Google Drive", len(gdrive_file_map))
-
     for year in years:
         for mode in ("am", "pm"):
             log.info("FHO %d %s – preparing downloads", year, mode.upper())
@@ -1004,55 +786,6 @@ def process_fho(years, output_path, state, update_mode=False):
                                   f"got={counters['downloaded']}  "
                                   f"404s={counters['skipped_404']}  "
                                   f"failed={counters['failed']}")
-
-            elif _FHO_SOURCE == "gdrive":
-                # Filter GDrive files for this year+mode
-                year_mode_files = []
-                for fname, fid in gdrive_file_map.items():
-                    m = re.search(r"fho_(\d{8})_(am|pm)", fname)
-                    if not m:
-                        continue
-                    fdate = m.group(1)
-                    fmode = m.group(2)
-                    if fmode != mode or not fdate.startswith(str(year)):
-                        continue
-                    d_obj = datetime.strptime(fdate, "%Y%m%d").date()
-                    if start <= d_obj <= end:
-                        year_mode_files.append((fname, fid))
-
-                if not year_mode_files:
-                    log.info("  No GDrive files for FHO %d %s", year, mode.upper())
-                    continue
-
-                print(f"\n▶ FHO {year} {mode.upper()}  —  {len(year_mode_files)} files on Google Drive")
-                work_items = [(fn, fid, gdrive_sess) for fn, fid in year_mode_files]
-                _done = 0
-                _milestone = max(1, len(work_items) // 10)
-                with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-                    futures = {pool.submit(_download_single_fho_gdrive, w): w[0] for w in work_items}
-                    for fut in tqdm(as_completed(futures), total=len(futures),
-                                    desc=f"FHO {year} {mode.upper()} (GDrive)", unit="zip",
-                                    disable=_NO_TTY):
-                        fname, data = fut.result()
-                        _done += 1
-                        if data is None:
-                            counters["skipped_404"] += 1
-                        else:
-                            counters["downloaded"] += 1
-                            try:
-                                rows = process_fho_zip_bytes(data, fname, mode)
-                                all_rows.extend(rows)
-                                d_str = extract_date_from_filename(fname)
-                                if d_str and (last_good_date is None or d_str > last_good_date):
-                                    last_good_date = d_str
-                            except Exception as exc:
-                                log.warning("Error processing %s: %s", fname, exc)
-                                counters["failed"] += 1
-                                iter_failures += 1
-                        if _NO_TTY and (_done % _milestone == 0 or _done == len(work_items)):
-                            print(f"  FHO {year} {mode.upper()} (GDrive): {_done}/{len(work_items)}"
-                                  f" ({_done/len(work_items)*100:.0f}%)  "
-                                  f"got={counters['downloaded']}  failed={counters['failed']}")
 
             else:
                 # Local directory mode
@@ -1501,7 +1234,6 @@ def _print_config_banner(args, datasets, update_mode, mode_source):
     """Print a startup configuration banner so the user can confirm the run parameters."""
     src_label = {
         "nwc": f"NWC  ({FHO_HOST})",
-        "gdrive": f"Google Drive (folder {GDRIVE_FOLDER_ID})",
     }.get(args.fho_source, f"Local dir  ({args.fho_source})")
     mode_label = f"{'Incremental' if update_mode else 'Full run'}  [{mode_source}]"
     years_str = "  ".join(str(y) for y in sorted(args.years))
@@ -1580,7 +1312,7 @@ def _print_run_summary(all_counters, total_elapsed, parallel):
     today = date.today()
     stale_thresholds = {"fho": 3, "lsr": 7, "wwa": 60}
     # FHO staleness is only meaningful when pulling live from NWC;
-    # local/GDrive archives are bounded by whatever was saved — not actionable.
+    # Local FHO archives are bounded by whatever was saved — not actionable.
     fho_is_offline = _FHO_SOURCE != "nwc"
     # WWA staleness is only meaningful when the current year was included in the run;
     # for purely historical runs the latest record will always be end-of-last-year.
@@ -1689,6 +1421,16 @@ def _print_failure_details(all_counters):
     print(f"{sep}\n")
 
 
+def _ensure_utf8_stdio():
+    """Avoid UnicodeEncodeError on Windows (cp1252) when printing box-drawing / arrows."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            if hasattr(stream, "reconfigure"):
+                stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="FHO Evaluation Data Pipeline")
     parser.add_argument("--years", type=int, nargs="+", default=DEFAULT_YEARS,
@@ -1701,17 +1443,23 @@ def main():
     parser.add_argument("--workers", type=int, default=MAX_WORKERS,
                         help="Concurrent download workers (default: 6)")
     parser.add_argument("--fho-source", default="nwc",
-                        help="FHO data source: 'nwc' (NWC server), 'gdrive' (Google Drive), "
-                             "or a local directory path containing FHO zip files")
-    parser.add_argument("--browser", default="edge", choices=["edge", "chrome", "firefox"],
-                        help="Browser to extract cookies from for Google Drive auth (default: edge)")
+                        help="FHO data source: 'nwc' (NWC server) or a local directory path "
+                             "containing FHO zip files (fho_YYYYMMDD_am|pm_final.zip)")
     args = parser.parse_args()
+    _ensure_utf8_stdio()
+
+    if str(args.fho_source).lower() == "gdrive":
+        log.error(
+            "Google Drive as --fho-source is no longer supported (folder web views do not list "
+            "every file). Sync FHO zips to disk (e.g. Google Drive for desktop) and pass that "
+            "folder path, or use the default NWC source."
+        )
+        sys.exit(1)
 
     # Apply module-level config overrides
     _set_max_workers(args.workers)
-    global _FHO_SOURCE, _BROWSER_FOR_COOKIES
+    global _FHO_SOURCE
     _FHO_SOURCE = args.fho_source
-    _BROWSER_FOR_COOKIES = args.browser
 
     datasets = [args.only] if args.only else ["fho", "lsr", "wwa"]
 

@@ -1,12 +1,12 @@
 # FHO Evaluation
 
-A **Flood Hazard Outlook (FHO) verification** toolkit: it builds three GeoPackages from public NWS/IEM sources (or optional Google Drive FHO zips), then serves a **Flask** dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
+A **Flood Hazard Outlook (FHO) verification** toolkit: it builds three GeoPackages from public NWS/IEM sources (or from **local** FHO zip files), then serves a **Flask** dashboard to compare FHO polygons against flood-related **Local Storm Reports (LSRs)** and **flood warnings (WWA)**.
 
 There are two main experiences in the browser:
 
 | Route | Purpose |
 |-------|---------|
-| `/` | FHO evaluation — pick date, AM/PM, forecast period, impact level; map + verification stats (POD-style checks, charts). |
+| `/` | FHO evaluation — pick date, AM/PM, forecast period, impact level; map + verification stats (POD-style checks, Chart.js charts). |
 | `/ibw-validation` | IBW validation — focus on high-impact flash-flood warnings and geometry coverage. |
 
 ---
@@ -17,9 +17,9 @@ There are two main experiences in the browser:
 flowchart LR
   subgraph sources [Data sources]
     NWC[NWC FHO zips]
+    LOCAL[Optional: local FHO zips]
     IEM_LSR[IEM LSR GeoJSON]
     IEM_WWA[IEM WWA yearly zips]
-    GDRIVE[Optional: Google Drive FHO zips]
   end
   subgraph pipeline [pipeline.py]
     P[Download + process]
@@ -33,7 +33,7 @@ flowchart LR
     A[Maps + /api/* JSON]
   end
   NWC --> P
-  GDRIVE --> P
+  LOCAL --> P
   IEM_LSR --> P
   IEM_WWA --> P
   P --> FHO
@@ -44,26 +44,34 @@ flowchart LR
   WWA --> A
 ```
 
-- **`pipeline.py`** — preferred way to produce or refresh the three `.gpkg` files in the project root.
-- **`app.py`** — loads those files (EPSG:4326 for the map), caches responses, exposes REST endpoints used by `static/js/app.js` and `static/js/ibw.js`.
+- **`pipeline.py`** — preferred way to produce or refresh the three `.gpkg` files in the project root (same directory as `app.py` when you run the app locally).
+- **`app.py`** — reads GeoPackages stored in **EPSG:5070**, **reprojects to EPSG:4326** for Leaflet, caches API responses, and exposes REST endpoints consumed by `static/js/app.js` and `static/js/ibw.js`.
 
 ---
 
 ## Requirements
 
-- **Python** 3.9+ (Dockerfile targets 3.9; newer 3.x generally works with pinned deps in `requirements.txt`).
+- **Python** 3.9+ (Docker image uses 3.9; 3.9–3.12 are the safest choices while **Fiona** wheels exist for your platform).
 - **Disk** — `fho_all.gpkg` is large (on the order of ~1+ GB depending on years and layers); allow several GB free.
 - **RAM** — 8 GB+ recommended when loading full FHO + LSR + warnings in the app.
 
 ### Python dependencies
 
-Install from the repo root:
+Install from the repo root with the **same interpreter** you will use to run scripts:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Stack highlights: **Flask**, **GeoPandas**, **Pandas**, **Shapely**, **Fiona**, **PyProj**, **requests**, **tqdm**. Production serving often uses **Gunicorn** (`gunicorn.conf.py`).
+**Windows:** If your default `python` is very new (e.g. 3.14) and **Fiona** fails to install (GDAL build errors), use a Python that has binary wheels (3.9–3.12) and keep **one** interpreter for both pip and scripts:
+
+```powershell
+py -3.9 -m pip install -r requirements.txt
+py -3.9 pipeline.py
+py -3.9 app.py
+```
+
+**Stack (see `requirements.txt` for pins):** **Flask**, **GeoPandas**, **Pandas**, **NumPy**, **Shapely**, **Fiona**, **PyProj**, **requests**, **tqdm**, **Werkzeug**, **Gunicorn**, **matplotlib**, **python-dateutil**. The browser UI uses **Leaflet**, **Bootstrap 5**, and **Chart.js** (loaded from CDN on the FHO page only).
 
 ---
 
@@ -74,8 +82,8 @@ Place these next to `app.py` (or mount them there in Docker):
 | File | Contents |
 |------|----------|
 | `fho_all.gpkg` | Layers `fho_{year}_{am\|pm}` (e.g. `fho_2024_am`). Includes synthetic **`Limited_merged`** polygons from the pipeline. CRS in file: **EPSG:5070** (app reprojects for the map). |
-| `LSRs_flood_allYears.gpkg` | Point LSRs; flood / flash flood only. Expected columns include `VALID`, `LAT`, `LON`, `EVENT`, `REMARKS`, `geometry`, etc. |
-| `flood_warnings_all.gpkg` | Layers `wwa_{year}`. Flood polygons (`PHENOM` FF/FL), with **`DAMAGTAG`** for IBW damage tags when present. |
+| `LSRs_flood_allYears.gpkg` | Layer **`LSRs_flood_allYears`**: point LSRs; flood / flash flood only. Expected columns include `VALID`, `LAT`, `LON`, `EVENT`, `REMARKS`, `geometry`, etc. CRS: **EPSG:5070**. |
+| `flood_warnings_all.gpkg` | Layers `wwa_{year}`. Flood polygons (`PHENOM` FF/FL), with **`DAMAGTAG`** for IBW damage tags when present. CRS: **EPSG:5070**. |
 
 The app watches file modification times and **reloads** when GeoPackages change (with backoff if a reload fails).
 
@@ -83,7 +91,7 @@ The app watches file modification times and **reloads** when GeoPackages change 
 
 ## Building data: `pipeline.py` (recommended)
 
-Unified download + processing (NWC / IEM by default). SSL verification is disabled for some government hosts that use certificates the stack may not trust; this matches operational needs for this project.
+Unified download + processing. **SSL verification is disabled** for some government hosts whose certificates the stack may not trust; this matches operational needs for this project.
 
 ### Common commands
 
@@ -102,8 +110,11 @@ python pipeline.py --only wwa
 # Force full rebuild (ignore incremental state)
 python pipeline.py --full
 
-# More parallel download workers
+# More parallel download workers (FHO zip downloads per dataset)
 python pipeline.py --workers 8
+
+# FHO from a local folder (zips may be in subfolders — pipeline searches recursively)
+python pipeline.py --fho-source "C:/data/fho_zips"
 ```
 
 ### Incremental runs
@@ -112,31 +123,28 @@ If `pipeline_state.json` already exists and contains progress, a normal run **au
 
 Legacy **`--update`** is still accepted for compatibility; behavior is the same as the auto-detected incremental mode.
 
-### FHO source options (`--fho-source`)
+When you run **all three** datasets in one command (no `--only`), the pipeline **executes them concurrently** (separate threads); elapsed times in the printed summary overlap.
+
+### FHO source (`--fho-source`)
 
 - **`nwc`** (default) — zips from National Weather Center operations, e.g.  
-  `https://ops.nwc.nws.noaa.gov/products/{YEAR}/final/FHO/shpzip/...`  
-  Missing dates (weekends/holidays) are normal; the pipeline skips 404s.
-- **`gdrive`** — uses **gdown** with browser cookies for a shared Drive folder of FHO zips (see `--browser`: `edge`, `chrome`, or `firefox`).
-- **Path** — local directory of FHO zip files.
+  `https://ops.nwc.nws.noaa.gov/products/{YEAR}/final/FHO/shpzip/fho_{YYYYMMDD}_{am|pm}_final.zip`  
+  Missing dates (weekends/holidays, archive gaps) are normal; the pipeline counts **404** responses separately in the run summary.
+- **Filesystem path** — directory containing FHO zips named like `fho_YYYYMMDD_am_final.zip` / `fho_YYYYMMDD_pm_final.zip`. The pipeline searches the directory and, if needed, **subdirectories** (`**` glob). Use this when you maintain a mirror of the NWC archive (for example files synced from shared storage) instead of hitting the live server.
+
+**Removed:** **`--fho-source gdrive`** and all Google Drive / browser-cookie integration are **gone** (Drive’s web folder listing could not enumerate large `shpzip` folders reliably). Passing `gdrive` now **exits with an error** pointing you to **`nwc`** or a **local path**. There are no `--browser`, `--browser-profile`, `--cookie-file`, or `--gdrive-folder-id` flags.
 
 ### State file
 
-`pipeline_state.json` tracks things like last FHO issuance date per year/mode, last LSR end date, and WWA year completion. Safe to delete if you want a clean incremental baseline (or use `--full`).
+`pipeline_state.json` tracks things like last FHO issuance date per year/mode, last LSR end date, and WWA year completion. It is **created/updated automatically**. Safe to delete if you want a clean incremental baseline (or use `--full`).
 
 ### Data sources (reference)
 
 | Dataset | Source |
 |---------|--------|
-| FHO shapefiles | NWC `ops.nwc.nws.noaa.gov` or optional Google Drive |
+| FHO shapefiles | NWC `ops.nwc.nws.noaa.gov` **or** local zip directory (`--fho-source` path) |
 | LSR | IEM `mesonet.agron.iastate.edu/geojson/lsr.php` (fetched in ~90-day chunks) |
 | WWA | IEM `mesonet.agron.iastate.edu/pickup/wwa/{YEAR}_all.zip` |
-
----
-
-## Alternative: pre-built zip from Google Drive
-
-`download_fhoData.py` downloads a **single zip** from Google Drive (see the script for the file ID), extracts `.gpkg` files into the current directory, and removes the zip. Use this if you do not want to run the full pipeline locally.
 
 ---
 
@@ -177,7 +185,7 @@ docker compose -f docker/docker-compose.yml build
 docker compose -f docker/docker-compose.yml up
 ```
 
-The compose file **bind-mounts** the three GeoPackages from the parent directory as **read-only**, plus `templates/`, `static/`, and `gunicorn.conf.py`. Update the `.gpkg` files on the host, then restart or wait for the app’s reload logic to pick up new mtimes.
+The compose file **bind-mounts** the three GeoPackages from the parent directory as **read-only**, plus `templates/`, `static/`, and `gunicorn.conf.py`. The image includes **`app.py`** only (not `pipeline.py`); build data on the host with `pipeline.py`, then refresh or restart the container so the app’s reload logic can see new file mtimes.
 
 **Note:** `docker-compose` (v1) also works if you still use the hyphenated command.
 
@@ -189,40 +197,34 @@ The compose file **bind-mounts** the three GeoPackages from the parent directory
 |------|------|
 | `app.py` | Flask app, data load, caching, geometry/stats logic |
 | `pipeline.py` | Download + ETL to the three GeoPackages |
-| `pipeline_state.json` | Incremental pipeline progress (generated) |
+| `pipeline_state.json` | Incremental pipeline progress (generated; optional to commit) |
 | `templates/fho_evaluation.html` | Main FHO page |
 | `templates/ibw_validation.html` | IBW page |
-| `static/js/app.js` | Main UI logic |
+| `static/js/app.js` | Main FHO UI logic |
 | `static/js/ibw.js` | IBW page logic |
+| `static/js/shared.js` | Shared helpers (e.g. theme toggle) used by both pages |
 | `static/css/styles.css` | Shared styling |
 | `gunicorn.conf.py` | Gunicorn settings |
 | `docker/` | Dockerfile + compose |
-
-### Reference-only scripts
-
-These are **not** the unified pipeline; they document or reproduce earlier one-off workflows. Prefer **`pipeline.py`** for end-to-end builds:
-
-- `FHO_process_summary.py`, `LSRs_csv_to_gpkg.py`, `SBWs_shps_to_gpkg_final.py` — original local-file processing patterns.
-- `greg/` — experimental downloads / alternate apps (historical).
 
 ---
 
 ## Troubleshooting
 
 1. **`Data not loaded` / missing layers**  
-   Ensure all three `.gpkg` files exist beside `app.py` and layer names match expectations (`fho_{year}_{am|pm}`, `wwa_{year}`, LSR default layer). Run `python pipeline.py` or extract data with `download_fhoData.py`.
+   Ensure all three `.gpkg` files exist beside `app.py` and layer names match expectations: `fho_{year}_{am|pm}`, **`LSRs_flood_allYears`** (LSR layer), and `wwa_{year}`. Run `python pipeline.py`.
 
-2. **Slow first load**  
+2. **Wrong Python / missing packages after `pip install`**  
+   Use `python -m pip install -r requirements.txt` with the **same** `python` (or `py -3.x`) you use to run `pipeline.py` and `app.py`.
+
+3. **Slow first load**  
    Reading large GeoPackages and building spatial indexes takes time. Subsequent requests benefit from in-memory caches.
 
-3. **Port 5000 in use**  
+4. **Port 5000 in use**  
    Stop the other process or change the port in Flask / compose port mapping.
 
-4. **Pipeline SSL or 404 noise**  
+5. **Pipeline SSL or 404 noise**  
    NWC 404s for missing issuance days are expected. Persistent SSL errors on corporate networks may require proxy settings outside the scope of this README.
-
-5. **Google Drive FHO (`--fho-source gdrive`)**  
-   You must be able to authenticate via browser cookies; use `--browser` matching the browser where you’re logged into Google.
 
 ---
 
