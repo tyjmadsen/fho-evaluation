@@ -132,8 +132,6 @@ When you run **all three** datasets in one command (no `--only`), the pipeline *
   Missing dates (weekends/holidays, archive gaps) are normal; the pipeline counts **404** responses separately in the run summary.
 - **Filesystem path** — directory containing FHO zips named like `fho_YYYYMMDD_am_final.zip` / `fho_YYYYMMDD_pm_final.zip`. The pipeline searches the directory and, if needed, **subdirectories** (`**` glob). Use this when you maintain a mirror of the NWC archive (for example files synced from shared storage) instead of hitting the live server.
 
-**Removed:** **`--fho-source gdrive`** and all Google Drive / browser-cookie integration are **gone** (Drive’s web folder listing could not enumerate large `shpzip` folders reliably). Passing `gdrive` now **exits with an error** pointing you to **`nwc`** or a **local path**. There are no `--browser`, `--browser-profile`, `--cookie-file`, or `--gdrive-folder-id` flags.
-
 ### State file
 
 `pipeline_state.json` tracks things like last FHO issuance date per year/mode, last LSR end date, and WWA year completion. It is **created/updated automatically**. Safe to delete if you want a clean incremental baseline (or use `--full`).
