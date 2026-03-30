@@ -1,31 +1,8 @@
-console.log('[IBW] ibw.js v7 loaded');
+// showError(), animateValue(), formatDateStr(), initSegGroup(), setSegValue(),
+// initThemeToggle(), createDarkBaseMap() are provided by shared.js
+
 const CONUS_CENTER = [39.8283, -98.5795];
 const CONUS_ZOOM = 4;
-
-function showError(message) {
-    const existing = document.getElementById('error-notification');
-    if (existing) existing.remove();
-    const toast = document.createElement('div');
-    toast.id = 'error-notification';
-    toast.className = 'error-toast';
-    toast.innerHTML = `
-        <svg class="error-toast-icon" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
-        </svg>
-        <span class="error-toast-message">${message}</span>
-        <button type="button" class="btn-close" aria-label="Close"></button>`;
-    document.body.appendChild(toast);
-    toast.querySelector('.btn-close').addEventListener('click', () => {
-        toast.classList.add('dismissing');
-        toast.addEventListener('animationend', () => toast.remove());
-    });
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.classList.add('dismissing');
-            toast.addEventListener('animationend', () => toast.remove());
-        }
-    }, 5000);
-}
 
 const map = L.map('map').setView(CONUS_CENTER, CONUS_ZOOM);
 
@@ -34,31 +11,13 @@ map.on('click', (e) => {
     if (hits.length) openStackedPopup(e.latlng);
 });
 
-function initSegGroup(groupId, hiddenId, onChange) {
-    const group = document.getElementById(groupId);
-    const hidden = document.getElementById(hiddenId);
-    if (!group || !hidden) return;
-    group.querySelectorAll('.seg-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            group.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            hidden.value = btn.dataset.value;
-            if (onChange) onChange();
-        });
-    });
-}
+// initSegGroup() and setSegValue() are provided by shared.js
 
-function setSegValue(groupId, hiddenId, value) {
-    const group = document.getElementById(groupId);
-    const hidden = document.getElementById(hiddenId);
-    if (!group || !hidden) return;
-    hidden.value = value;
-    group.querySelectorAll('.seg-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.value === value);
-    });
+{
+    const _ilLabel = document.getElementById('impactLevelLabel');
+    const _ilHidden = document.getElementById('impactLevel');
+    if (_ilLabel && _ilHidden) _ilLabel.textContent = _ilHidden.value;
 }
-
-document.getElementById('impactLevelLabel').textContent = document.getElementById('impactLevel').value;
 
 const lightBaseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
@@ -129,94 +88,100 @@ map.on('zoomend', () => {
     });
 });
 
-function animateValue(el, endVal, duration = 400, suffix = '') {
-    const startVal = parseFloat(el.textContent) || 0;
-    if (startVal === endVal) return;
-    const startTime = performance.now();
-    const step = (now) => {
-        const progress = Math.min((now - startTime) / duration, 1);
-        const eased = 1 - Math.pow(1 - progress, 3);
-        const current = startVal + (endVal - startVal) * eased;
-        el.textContent = (Number.isInteger(endVal) ? Math.round(current) : current.toFixed(2)) + suffix;
-        if (progress < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-}
+// animateValue() is provided by shared.js
 
 function resetIbwStats() {
-    ['podValue', 'hitsValue', 'missesValue', 'noTagValue', 'totalFfwsValue'].forEach(id => {
+    ['podValue', 'hitsValue', 'missesValue', 'noTagValue', 'totalFfwsValue', 'lsrsInWindowValue'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.textContent = '--';
     });
+    const vwRow = document.getElementById('verifWindowRow');
+    if (vwRow) vwRow.style.display = 'none';
 }
+
+let _legendBuilt = false;
+const _legendZGroupMap = {
+    limited: 'limited',
+    fho: 'fho',
+    noTag: 'noTag',
+    considerableLayers: 'considerable',
+    catastrophicLayers: 'catastrophic',
+    lsrs: 'lsr'
+};
 
 function updateLegend() {
     const legend = document.getElementById('mapLegend');
     if (!legend) return;
-
     const body = legend.querySelector('.legend-body');
     if (!body) return;
 
-    body.innerHTML = `
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="catastrophicLayers">
-            <span class="legend-color" style="background-color: ${styles.catastrophicHit.color};"></span>
-            <span>Cat. Hit</span>
-        </label>
-        <label class="legend-toggle legend-sub">
-            <span class="legend-color" style="background-color: ${styles.catastrophicMiss.color}; opacity: 0.6;"></span>
-            <span>Cat. Miss</span>
-        </label>
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="considerableLayers">
-            <span class="legend-color" style="background-color: ${styles.considerableHit.color};"></span>
-            <span>Con. Hit</span>
-        </label>
-        <label class="legend-toggle legend-sub">
-            <span class="legend-color" style="background-color: ${styles.considerableMiss.color}; opacity: 0.6;"></span>
-            <span>Con. Miss</span>
-        </label>
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="noTag">
-            <span class="legend-color" style="background-color: ${styles.noTag.color};"></span>
-            <span>No Tag</span>
-        </label>
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="fho">
-            <span class="legend-color" style="background-color: ${styles.fhoConsiderable.fillColor}; border: 2px dashed ${styles.fhoConsiderable.color};"></span>
-            <span>FHO Con.</span>
-        </label>
-        <label class="legend-toggle legend-sub">
-            <span class="legend-color" style="background-color: ${styles.fhoCatastrophic.fillColor}; border: 2px dashed ${styles.fhoCatastrophic.color};"></span>
-            <span>FHO Cat.</span>
-        </label>
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="limited">
-            <span class="legend-color" style="background-color: ${styles.limited.color}; opacity: 0.5;"></span>
-            <span>FHO Limited</span>
-        </label>
-        <label class="legend-toggle">
-            <input type="checkbox" checked data-layer="lsrs">
-            <span class="legend-color" style="background-color: #7c3aed; border-radius: 50%;"></span>
-            <span>LSRs</span>
-        </label>
-    `;
+    if (!_legendBuilt) {
+        body.innerHTML = `
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="catastrophicLayers">
+                <span class="legend-color" style="background-color: ${styles.catastrophicHit.color};"></span>
+                <span>Cat. Hit</span>
+            </label>
+            <label class="legend-toggle legend-sub">
+                <span class="legend-color" style="background-color: ${styles.catastrophicMiss.color}; opacity: 0.6;"></span>
+                <span>Cat. Miss</span>
+            </label>
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="considerableLayers">
+                <span class="legend-color" style="background-color: ${styles.considerableHit.color};"></span>
+                <span>Con. Hit</span>
+            </label>
+            <label class="legend-toggle legend-sub">
+                <span class="legend-color" style="background-color: ${styles.considerableMiss.color}; opacity: 0.6;"></span>
+                <span>Con. Miss</span>
+            </label>
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="noTag">
+                <span class="legend-color" style="background-color: ${styles.noTag.color};"></span>
+                <span>No Tag</span>
+            </label>
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="fho">
+                <span class="legend-color" style="background-color: ${styles.fhoConsiderable.fillColor}; border: 2px dashed ${styles.fhoConsiderable.color};"></span>
+                <span>FHO Con.</span>
+            </label>
+            <label class="legend-toggle legend-sub">
+                <span class="legend-color" style="background-color: ${styles.fhoCatastrophic.fillColor}; border: 2px dashed ${styles.fhoCatastrophic.color};"></span>
+                <span>FHO Cat.</span>
+            </label>
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="limited">
+                <span class="legend-color" style="background-color: ${styles.limited.color}; opacity: 0.5;"></span>
+                <span>FHO Limited</span>
+            </label>
+            <label class="legend-toggle">
+                <input type="checkbox" checked data-layer="lsrs">
+                <span class="legend-color" style="background-color: #7c3aed; border-radius: 50%;"></span>
+                <span>LSRs</span>
+            </label>
+        `;
 
-    const legendZGroupMap = {
-        limited: 'limited',
-        fho: 'fho',
-        noTag: 'noTag',
-        considerableLayers: 'considerable',
-        catastrophicLayers: 'catastrophic',
-        lsrs: 'lsr'
-    };
-    body.querySelectorAll('input[data-layer]').forEach(cb => {
-        cb.addEventListener('change', function() {
-            const zGroup = legendZGroupMap[this.dataset.layer];
-            if (!zGroup) return;
-            activeLayers.filter(l => l._zGroup === zGroup).forEach(l => {
-                if (this.checked) { map.addLayer(l); } else { map.removeLayer(l); }
+        body.querySelectorAll('input[data-layer]').forEach(cb => {
+            cb.addEventListener('change', function() {
+                const zGroup = _legendZGroupMap[this.dataset.layer];
+                if (!zGroup) return;
+                activeLayers.filter(l => l._zGroup === zGroup).forEach(l => {
+                    if (this.checked) { map.addLayer(l); } else { map.removeLayer(l); }
+                });
             });
+        });
+        _legendBuilt = true;
+    }
+}
+
+function _syncLegendVisibility() {
+    const legend = document.getElementById('mapLegend');
+    if (!legend) return;
+    legend.querySelectorAll('input[data-layer]').forEach(cb => {
+        const zGroup = _legendZGroupMap[cb.dataset.layer];
+        if (!zGroup) return;
+        activeLayers.filter(l => l._zGroup === zGroup).forEach(l => {
+            if (cb.checked) { map.addLayer(l); } else { map.removeLayer(l); }
         });
     });
 }
@@ -291,16 +256,23 @@ fetch('/api/high-impact-events')
         showError('Failed to load Quick Select events.');
     });
 
-document.getElementById('issuanceDate').addEventListener('change', updateMap);
+document.getElementById('issuanceDate')?.addEventListener('change', () => {
+    const qs = document.getElementById('quickSelect');
+    if (qs) qs.selectedIndex = 0;
+    updateEventStepButtons();
+    updateMap();
+});
 
 initSegGroup('issuanceGroup', 'issuance', updateMap);
 initSegGroup('forecastPeriodGroup', 'forecastPeriod', updateMap);
 initSegGroup('impactLevelGroup', 'impactLevel', function() {
-    document.getElementById('impactLevelLabel').textContent = document.getElementById('impactLevel').value;
+    const lbl = document.getElementById('impactLevelLabel');
+    const val = document.getElementById('impactLevel');
+    if (lbl && val) lbl.textContent = val.value;
     updateMap();
 });
 
-document.getElementById('quickSelect').addEventListener('change', function(e) {
+document.getElementById('quickSelect')?.addEventListener('change', function(e) {
     if (!e.target.value) return;
 
     try {
@@ -317,13 +289,14 @@ document.getElementById('quickSelect').addEventListener('change', function(e) {
                 setSegValue('forecastPeriodGroup', 'forecastPeriod', event.period);
             }
 
-            const selectedGroup = e.target.selectedOptions[0].parentElement.label;
+            const ilLabel = document.getElementById('impactLevelLabel');
+            const selectedGroup = e.target.selectedOptions[0]?.parentElement?.label || '';
             if (selectedGroup.includes('Considerable')) {
                 setSegValue('impactLevelGroup', 'impactLevel', 'Considerable');
-                document.getElementById('impactLevelLabel').textContent = 'Considerable';
+                if (ilLabel) ilLabel.textContent = 'Considerable';
             } else if (selectedGroup.includes('Catastrophic')) {
                 setSegValue('impactLevelGroup', 'impactLevel', 'Catastrophic');
-                document.getElementById('impactLevelLabel').textContent = 'Catastrophic';
+                if (ilLabel) ilLabel.textContent = 'Catastrophic';
             }
 
             const noFhoAlert = document.getElementById('noFhoAlert');
@@ -333,13 +306,15 @@ document.getElementById('quickSelect').addEventListener('change', function(e) {
             setSegValue('issuanceGroup', 'issuance', 'AM');
             setSegValue('forecastPeriodGroup', 'forecastPeriod', '1-3');
             setSegValue('impactLevelGroup', 'impactLevel', 'Considerable');
-            document.getElementById('impactLevelLabel').textContent = 'Considerable';
+            const ilLabel = document.getElementById('impactLevelLabel');
+            if (ilLabel) ilLabel.textContent = 'Considerable';
 
             const noFhoAlert = document.getElementById('noFhoAlert');
             if (noFhoAlert) noFhoAlert.style.display = 'block';
         }
 
         updateMap();
+        updateEventStepButtons();
     } catch (error) {
         console.error('Error handling Quick Select change:', error);
         showError('Failed to load selected event.');
@@ -382,10 +357,7 @@ function updateEventStepButtons() {
 document.getElementById('eventPrev')?.addEventListener('click', () => stepEvent(-1));
 document.getElementById('eventNext')?.addEventListener('click', () => stepEvent(1));
 
-const origQsHandler = document.getElementById('quickSelect');
-if (origQsHandler) {
-    origQsHandler.addEventListener('change', updateEventStepButtons);
-}
+// updateEventStepButtons is called inside the quickSelect change handler above
 
 function safeAddGeoJSON(geojsonData, zGroup, style, layerType) {
     if (!geojsonData) return null;
@@ -448,8 +420,187 @@ function safeAddGeoJSON(geojsonData, zGroup, style, layerType) {
     return geoJSONLayer;
 }
 
+// Client-side response cache (mirrors app.js pattern)
+const ibwStatsCache = new Map();
+const IBW_MAX_CACHE_SIZE = 30;
+
+function ibwManageCacheSize() {
+    if (ibwStatsCache.size > IBW_MAX_CACHE_SIZE) {
+        const oldestKey = ibwStatsCache.keys().next().value;
+        ibwStatsCache.delete(oldestKey);
+    }
+}
+
+function ibwCacheKey(filters) {
+    return `${filters.issuance_date}_${filters.issuance}_${filters.forecast_period}_${filters.impact_level}`;
+}
+
+function _renderIbwData(data) {
+    const emptyState = document.getElementById('mapEmptyState');
+    const hasGeometries = data.geometries && (
+        data.geometries.limited?.features?.length ||
+        data.geometries.fho_considerable?.geometry ||
+        data.geometries.fho_catastrophic?.geometry ||
+        data.geometries.no_tag?.features?.length ||
+        data.geometries.misses?.features?.length ||
+        data.geometries.hits?.features?.length ||
+        data.geometries.lsrs?.features?.length
+    );
+    if (emptyState) {
+        emptyState.style.display = hasGeometries ? 'none' : '';
+        emptyState.setAttribute('aria-hidden', hasGeometries ? 'true' : 'false');
+    }
+
+    if (data.statistics) {
+        const podEl = document.getElementById('podValue');
+        if (podEl) {
+            podEl.classList.remove('stat-flash');
+            void podEl.offsetWidth;
+            podEl.classList.add('stat-flash');
+            const ratePct = (data.statistics.capture_rate || 0) * 100;
+            animateValue(podEl, ratePct, 400, '%');
+            podEl.style.color = colorForVerificationRate(ratePct, 70);
+        }
+
+        const intStats = {
+            hitsValue: data.statistics.hits,
+            missesValue: data.statistics.misses,
+            noTagValue: data.statistics.ffws_no_tag,
+            totalFfwsValue: data.statistics.total_ffws,
+            lsrsInWindowValue: data.statistics.total_lsrs
+        };
+        Object.entries(intStats).forEach(([id, val]) => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.classList.remove('stat-flash');
+                void el.offsetWidth;
+                el.classList.add('stat-flash');
+                animateValue(el, val != null ? val : 0);
+            }
+        });
+    }
+
+    const vwRow = document.getElementById('verifWindowRow');
+    const vwVal = document.getElementById('verifWindowValue');
+    if (vwRow && vwVal) {
+        if (data.verification_window?.start && data.verification_window?.end) {
+            const fmt = (iso) => {
+                const d = new Date(iso + 'Z');
+                return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' UTC';
+            };
+            vwVal.textContent = `${fmt(data.verification_window.start)} \u2013 ${fmt(data.verification_window.end)}`;
+            vwRow.style.display = '';
+        } else {
+            vwRow.style.display = 'none';
+        }
+    }
+
+    if (data.geometries) {
+        let bounds = null;
+
+        safeAddGeoJSON(data.geometries.limited, 'limited', styles.limited, 'Limited');
+        safeAddGeoJSON(data.geometries.fho_considerable, 'fho', styles.fhoConsiderable, 'Considerable');
+        safeAddGeoJSON(data.geometries.fho_catastrophic, 'fho', styles.fhoCatastrophic, 'Catastrophic');
+        safeAddGeoJSON(data.geometries.no_tag, 'noTag', styles.noTag, 'NoTag');
+
+        if (data.geometries.misses?.features) {
+            const considerableMisses = {
+                type: 'FeatureCollection',
+                features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+            };
+            safeAddGeoJSON(considerableMisses, 'considerable', styles.considerableMiss, 'Miss');
+            const catastrophicMisses = {
+                type: 'FeatureCollection',
+                features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+            };
+            safeAddGeoJSON(catastrophicMisses, 'catastrophic', styles.catastrophicMiss, 'Miss');
+        }
+
+        if (data.geometries.hits?.features) {
+            const considerableHits = {
+                type: 'FeatureCollection',
+                features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+            };
+            safeAddGeoJSON(considerableHits, 'considerable', styles.considerableHit, 'Hit');
+            const catastrophicHits = {
+                type: 'FeatureCollection',
+                features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+            };
+            safeAddGeoJSON(catastrophicHits, 'catastrophic', styles.catastrophicHit, 'Hit');
+        }
+
+        if (data.geometries.other_impact?.features) {
+            const considerableOther = {
+                type: 'FeatureCollection',
+                features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
+            };
+            safeAddGeoJSON(considerableOther, 'considerable', styles.considerableHit, 'OtherImpact');
+            const catastrophicOther = {
+                type: 'FeatureCollection',
+                features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
+            };
+            safeAddGeoJSON(catastrophicOther, 'catastrophic', styles.catastrophicHit, 'OtherImpact');
+        }
+
+        if (data.geometries.lsrs?.features?.length) {
+            const lsrLayer = L.geoJSON(data.geometries.lsrs, {
+                pointToLayer: (feature, latlng) => {
+                    return L.circleMarker(latlng, {
+                        radius: lsrRadius(map.getZoom()),
+                        fillColor: '#7c3aed',
+                        color: '#4c1d95',
+                        weight: 1.5,
+                        opacity: 1,
+                        fillOpacity: 0.8
+                    });
+                },
+                onEachFeature: (feature, lyr) => {
+                    if (!feature.properties) feature.properties = {};
+                    feature.properties.type = 'LSR';
+                    const content = buildPopupContent(feature);
+                    if (content) {
+                        lyr._popupContent = content;
+                        lyr._featureType = 'LSR';
+                        lyr._geojsonFeature = feature;
+                    }
+                }
+            }).addTo(map);
+            lsrLayer._zGroup = 'lsr';
+            lsrLayer._isLsrLayer = true;
+            activeLayers.push(lsrLayer);
+        }
+
+        layerOrder.forEach(zGroup => {
+            const matching = activeLayers.filter(l => l._zGroup === zGroup);
+            matching.forEach(l => l.bringToFront());
+        });
+
+        updateLegend();
+        _syncLegendVisibility();
+
+        activeLayers.forEach(lyr => {
+            if (lyr && typeof lyr.getBounds === 'function') {
+                const layerBounds = lyr.getBounds();
+                if (layerBounds && layerBounds.isValid()) {
+                    bounds = bounds ? bounds.extend(layerBounds) : layerBounds;
+                }
+            }
+        });
+
+        if (bounds && bounds.isValid()) {
+            map.fitBounds(bounds);
+        } else {
+            map.setView(CONUS_CENTER, CONUS_ZOOM);
+        }
+    } else {
+        map.setView(CONUS_CENTER, CONUS_ZOOM);
+    }
+    ibwPushState();
+}
+
 let ibwUpdateTimeout;
 let ibwAbortController = null;
+let _ibwFetchGen = 0;
 
 function updateMap() {
     clearTimeout(ibwUpdateTimeout);
@@ -462,17 +613,37 @@ function updateMap() {
 
 function _doUpdateMap(signal) {
     const loadingOverlay = document.querySelector('.loading-overlay');
-    loadingOverlay.style.display = 'flex';
+
+    const dateEl = document.getElementById('issuanceDate');
+    const issEl = document.getElementById('issuance');
+    const fpEl = document.getElementById('forecastPeriod');
+    const ilEl = document.getElementById('impactLevel');
+    if (!dateEl || !issEl || !fpEl || !ilEl) return;
+
+    const filters = {
+        issuance_date: dateEl.value,
+        issuance: issEl.value,
+        forecast_period: fpEl.value,
+        impact_level: ilEl.value
+    };
+
+    if (!filters.issuance_date || !filters.issuance || !filters.forecast_period) {
+        return;
+    }
+
+    const cacheKey = ibwCacheKey(filters);
+    if (ibwStatsCache.has(cacheKey)) {
+        activeLayers.forEach(lyr => { if (lyr) map.removeLayer(lyr); });
+        activeLayers = [];
+        _renderIbwData(ibwStatsCache.get(cacheKey));
+        return;
+    }
 
     activeLayers.forEach(lyr => { if (lyr) map.removeLayer(lyr); });
     activeLayers = [];
 
-    const filters = {
-        issuance_date: document.getElementById('issuanceDate').value,
-        issuance: document.getElementById('issuance').value,
-        forecast_period: document.getElementById('forecastPeriod').value,
-        impact_level: document.getElementById('impactLevel').value
-    };
+    const gen = ++_ibwFetchGen;
+    if (loadingOverlay) loadingOverlay.style.display = 'flex';
 
     fetch('/api/ibw-stats', {
         method: 'POST',
@@ -485,220 +656,34 @@ function _doUpdateMap(signal) {
         return response.json();
     })
     .then(data => {
+        if (gen !== _ibwFetchGen) return;
         if (data.error) {
             throw new Error(data.error);
         }
 
-        const emptyState = document.getElementById('mapEmptyState');
-        if (emptyState) emptyState.style.display = 'none';
-
-        if (data.statistics) {
-            const podEl = document.getElementById('podValue');
-            if (podEl) {
-                podEl.classList.remove('stat-flash');
-                void podEl.offsetWidth;
-                podEl.classList.add('stat-flash');
-                const podPct = data.statistics.pod * 100;
-                animateValue(podEl, podPct, 400, '%');
-                podEl.style.color = podPct >= 70 ? 'var(--success-color)' : podPct >= 40 ? 'var(--warning-color)' : 'var(--danger-color)';
-            }
-
-            const intStats = {
-                hitsValue: data.statistics.hits,
-                missesValue: data.statistics.misses,
-                noTagValue: data.statistics.ffws_no_tag,
-                totalFfwsValue: data.statistics.total_ffws
-            };
-            Object.entries(intStats).forEach(([id, val]) => {
-                const el = document.getElementById(id);
-                if (el) {
-                    el.classList.remove('stat-flash');
-                    void el.offsetWidth;
-                    el.classList.add('stat-flash');
-                    animateValue(el, val);
-                }
-            });
-        }
-
-        if (data.verification_window) {
-            const vwRow = document.getElementById('verifWindowRow');
-            const vwVal = document.getElementById('verifWindowValue');
-            if (vwRow && vwVal) {
-                const fmt = (iso) => {
-                    const d = new Date(iso + 'Z');
-                    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' UTC';
-                };
-                vwVal.textContent = `${fmt(data.verification_window.start)} \u2013 ${fmt(data.verification_window.end)}`;
-                vwRow.style.display = '';
-            }
-        }
-
-        if (data.geometries) {
-            let bounds = null;
-
-            safeAddGeoJSON(data.geometries.limited, 'limited', styles.limited, 'Limited');
-            safeAddGeoJSON(data.geometries.fho_considerable, 'fho', styles.fhoConsiderable, 'Considerable');
-            safeAddGeoJSON(data.geometries.fho_catastrophic, 'fho', styles.fhoCatastrophic, 'Catastrophic');
-            safeAddGeoJSON(data.geometries.no_tag, 'noTag', styles.noTag, 'NoTag');
-
-            if (data.geometries.misses?.features) {
-                const considerableMisses = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
-                };
-                safeAddGeoJSON(considerableMisses, 'considerable', styles.considerableMiss, 'Miss');
-
-                const catastrophicMisses = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.misses.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
-                };
-                safeAddGeoJSON(catastrophicMisses, 'catastrophic', styles.catastrophicMiss, 'Miss');
-            }
-
-            if (data.geometries.hits?.features) {
-                const considerableHits = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
-                };
-                safeAddGeoJSON(considerableHits, 'considerable', styles.considerableHit, 'Hit');
-
-                const catastrophicHits = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.hits.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
-                };
-                safeAddGeoJSON(catastrophicHits, 'catastrophic', styles.catastrophicHit, 'Hit');
-            }
-
-            if (data.geometries.other_impact?.features) {
-                const considerableOther = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CONSIDERABLE')
-                };
-                safeAddGeoJSON(considerableOther, 'considerable', styles.considerableHit, 'OtherImpact');
-
-                const catastrophicOther = {
-                    type: 'FeatureCollection',
-                    features: data.geometries.other_impact.features.filter(f => f.properties?.DAMAGTAG === 'CATASTROPHIC')
-                };
-                safeAddGeoJSON(catastrophicOther, 'catastrophic', styles.catastrophicHit, 'OtherImpact');
-            }
-
-            if (data.geometries.lsrs?.features?.length) {
-                const lsrLayer = L.geoJSON(data.geometries.lsrs, {
-                    pointToLayer: (feature, latlng) => {
-                        return L.circleMarker(latlng, {
-                            radius: lsrRadius(map.getZoom()),
-                            fillColor: '#7c3aed',
-                            color: '#4c1d95',
-                            weight: 1.5,
-                            opacity: 1,
-                            fillOpacity: 0.8
-                        });
-                    },
-                    onEachFeature: (feature, lyr) => {
-                        if (!feature.properties) feature.properties = {};
-                        feature.properties.type = 'LSR';
-                        const content = buildPopupContent(feature);
-                        if (content) {
-                            lyr._popupContent = content;
-                            lyr._featureType = 'LSR';
-                            lyr._geojsonFeature = feature;
-                        }
-                    }
-                }).addTo(map);
-                lsrLayer._zGroup = 'lsr';
-                lsrLayer._isLsrLayer = true;
-                activeLayers.push(lsrLayer);
-            }
-
-            // Force z-order: bringToFront in bottom→top order so the last call wins
-            layerOrder.forEach(zGroup => {
-                const matching = activeLayers.filter(l => l._zGroup === zGroup);
-                matching.forEach(l => l.bringToFront());
-                if (matching.length) console.log(`[IBW] bringToFront: ${zGroup} (${matching.length} layers)`);
-            });
-
-            updateLegend();
-
-            activeLayers.forEach(lyr => {
-                if (lyr && typeof lyr.getBounds === 'function') {
-                    const layerBounds = lyr.getBounds();
-                    if (layerBounds && layerBounds.isValid()) {
-                        bounds = bounds ? bounds.extend(layerBounds) : layerBounds;
-                    }
-                }
-            });
-
-            if (bounds && bounds.isValid()) {
-                map.fitBounds(bounds);
-            } else {
-                map.setView(CONUS_CENTER, CONUS_ZOOM);
-            }
-        } else {
-            map.setView(CONUS_CENTER, CONUS_ZOOM);
-        }
-        ibwPushState();
+        ibwStatsCache.set(cacheKey, data);
+        ibwManageCacheSize();
+        _renderIbwData(data);
     })
     .catch(error => {
         if (error.name === 'AbortError') return;
+        if (gen !== _ibwFetchGen) return;
         console.error('Error:', error);
         showError('Failed to load verification data. Please try again.');
         resetIbwStats();
         map.setView(CONUS_CENTER, CONUS_ZOOM);
     })
     .finally(() => {
-        loadingOverlay.style.display = 'none';
+        if (gen === _ibwFetchGen && loadingOverlay) {
+            loadingOverlay.style.display = 'none';
+        }
     });
 }
 
-function formatDateStr(val) {
-    if (!val) return 'Unknown';
-    try {
-        const d = new Date(val);
-        if (isNaN(d)) return String(val);
-        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    } catch { return String(val); }
-}
+// formatDateStr() is provided by shared.js
 
-const darkBaseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 20,
-    minZoom: 0
-});
-
-const sunIcon = '<path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />';
-const moonIcon = '<path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0112.478 3.34a9.72 9.72 0 109.274 11.662z" />';
-
-function initThemeToggle() {
-    const saved = localStorage.getItem('fho-theme');
-    if (saved === 'dark') applyTheme('dark');
-
-    const btn = document.getElementById('themeToggle');
-    if (btn) {
-        btn.addEventListener('click', () => {
-            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-            applyTheme(next);
-            localStorage.setItem('fho-theme', next);
-        });
-    }
-}
-
-function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    const icon = document.getElementById('themeIcon');
-    if (icon) icon.innerHTML = theme === 'dark' ? sunIcon : moonIcon;
-
-    if (theme === 'dark') {
-        map.removeLayer(lightBaseMap);
-        darkBaseMap.addTo(map);
-    } else {
-        map.removeLayer(darkBaseMap);
-        lightBaseMap.addTo(map);
-    }
-}
-
-initThemeToggle();
+const darkBaseMap = createDarkBaseMap();
+initThemeToggle(map, lightBaseMap, darkBaseMap);
 
 const legendToggle = document.getElementById('legendToggle');
 if (legendToggle) {
@@ -733,12 +718,14 @@ function ibwRestoreState() {
     const fp = params.get('fp');
     const il = params.get('il');
     let restored = false;
-    if (date) { document.getElementById('issuanceDate').value = date; restored = true; }
+    const dateEl = document.getElementById('issuanceDate');
+    if (date && dateEl) { dateEl.value = date; restored = true; }
     if (iss) setSegValue('issuanceGroup', 'issuance', iss);
     if (fp) setSegValue('forecastPeriodGroup', 'forecastPeriod', fp);
     if (il) {
         setSegValue('impactLevelGroup', 'impactLevel', il);
-        document.getElementById('impactLevelLabel').textContent = il;
+        const labelEl = document.getElementById('impactLevelLabel');
+        if (labelEl) labelEl.textContent = il;
     }
     return restored;
 }
@@ -794,27 +781,30 @@ function buildPopupContent(feature) {
         feature.properties.type === 'Limited') {
         const typeColors = { Catastrophic: '#b91c1c', Considerable: '#d97706', Limited: '#1e40af' };
         const borderColor = typeColors[feature.properties.type] || '#1e40af';
+        const popupDate = document.getElementById('issuanceDate')?.value || 'Unknown';
+        const popupIss = document.getElementById('issuance')?.value || 'Unknown';
+        const popupFp = document.getElementById('forecastPeriod')?.value || 'Unknown';
         return `
             <div class="warning-popup">
                 <div class="title" style="border-left: 4px solid ${borderColor}; padding-left: 8px;">FHO Forecast Area</div>
                 <div class="details">
                     <div><span class="label">Impact:</span> <span class="value">${feature.properties.type}</span></div>
-                    <div><span class="label">Date:</span> <span class="value">${document.getElementById('issuanceDate').value}</span></div>
-                    <div><span class="label">Time:</span> <span class="value">${document.getElementById('issuance').value}</span></div>
-                    <div><span class="label">Period:</span> <span class="value">Days ${document.getElementById('forecastPeriod').value}</span></div>
+                    <div><span class="label">Date:</span> <span class="value">${popupDate}</span></div>
+                    <div><span class="label">Time:</span> <span class="value">${popupIss}</span></div>
+                    <div><span class="label">Period:</span> <span class="value">Days ${popupFp}</span></div>
                 </div>
             </div>`;
     } else if (feature.properties.type === 'LSR') {
-        const event = feature.properties.EVENT || feature.properties.TYPETEXT || 'Unknown';
-        const remarks = feature.properties.REMARKS || feature.properties.REMARK || 'None';
+        const event = escapeHtml(feature.properties.EVENT || feature.properties.TYPETEXT || 'Unknown');
+        const remarks = escapeHtml(feature.properties.REMARKS || feature.properties.REMARK || 'None');
         return `
             <div class="warning-popup">
                 <div class="title" style="border-left: 4px solid #7c3aed; padding-left: 8px;">Local Storm Report</div>
                 <div class="details">
                     <div><span class="label">Event:</span> <span class="value">${event}</span></div>
-                    <div><span class="label">Location:</span> <span class="value">${feature.properties.CITY || 'Unknown'}, ${feature.properties.STATE || ''}</span></div>
+                    <div><span class="label">Location:</span> <span class="value">${escapeHtml(feature.properties.CITY || 'Unknown')}, ${escapeHtml(feature.properties.STATE || '')}</span></div>
                     <div><span class="label">Time:</span> <span class="value">${formatDateStr(feature.properties.VALID)}</span></div>
-                    <div><span class="label">Source:</span> <span class="value">${feature.properties.SOURCE || 'Unknown'}</span></div>
+                    <div><span class="label">Source:</span> <span class="value">${escapeHtml(feature.properties.SOURCE || 'Unknown')}</span></div>
                     <div><span class="label">Remarks:</span> <span class="value">${remarks}</span></div>
                 </div>
             </div>`;
@@ -822,7 +812,7 @@ function buildPopupContent(feature) {
         if (feature.properties.popup_content) {
             return feature.properties.popup_content;
         }
-        const isHit = feature.properties.type === 'Hit';
+        const isHit = feature.properties.type === 'Hit' || feature.properties.type === 'OtherImpact';
         const statusColor = isHit ? hitColor : missColor;
         const statusLabel = isHit ? 'HIT' : 'MISS';
         return `
@@ -831,7 +821,7 @@ function buildPopupContent(feature) {
                     Flash Flood Warning <span style="color:${statusColor}; font-size:12px;">[${statusLabel}]</span>
                 </div>
                 <div class="details">
-                    <div><span class="label">Impact:</span> <span class="value">${feature.properties.DAMAGTAG || 'No Tag'}</span></div>
+                    <div><span class="label">Impact:</span> <span class="value">${escapeHtml(feature.properties.DAMAGTAG || 'No Tag')}</span></div>
                     <div><span class="label">Issued:</span> <span class="value">${formatDateStr(feature.properties.ISSUED)}</span></div>
                     <div><span class="label">Expired:</span> <span class="value">${formatDateStr(feature.properties.EXPIRED)}</span></div>
                 </div>
@@ -889,8 +879,12 @@ function layerContainsPoint(layer, latlng) {
         if (!bounds.isValid() || !bounds.contains(latlng)) return false;
     }
     if (layer._geojsonFeature) {
-        const pt = turf.point([latlng.lng, latlng.lat]);
-        return turf.booleanPointInPolygon(pt, layer._geojsonFeature);
+        if (typeof turf !== 'undefined' && turf.booleanPointInPolygon) {
+            const pt = turf.point([latlng.lng, latlng.lat]);
+            return turf.booleanPointInPolygon(pt, layer._geojsonFeature);
+        }
+        // Fallback: bounds check already passed above, accept it
+        return true;
     }
     return false;
 }

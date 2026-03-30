@@ -186,7 +186,7 @@ function initCharts() {
     podDonutChart = new Chart(donutCtx, {
         type: 'doughnut',
         data: {
-            labels: ['Hits', 'Misses'],
+            labels: ['Captured', 'Missed'],
             datasets: [{
                 data: [0, 1],
                 backgroundColor: ['#059669', '#dc2626'],
@@ -206,10 +206,10 @@ function initCharts() {
         data: {
             labels: [''],
             datasets: [
-                { label: 'LSR Hits', data: [0], backgroundColor: '#059669' },
-                { label: 'FFW Hits', data: [0], backgroundColor: '#10b981' },
-                { label: 'LSR Misses', data: [0], backgroundColor: '#dc2626' },
-                { label: 'FFW Misses', data: [0], backgroundColor: '#f87171' }
+                { label: 'LSR Inside', data: [0], backgroundColor: '#059669' },
+                { label: 'FFW Inside', data: [0], backgroundColor: '#10b981' },
+                { label: 'LSR Outside', data: [0], backgroundColor: '#dc2626' },
+                { label: 'FFW Outside', data: [0], backgroundColor: '#f87171' }
             ]
         },
         options: {
@@ -238,7 +238,7 @@ function initCharts() {
                         callbacks: {
                             label: (ctx) => {
                                 const item = ctx.chart._areaBinData?.[ctx.dataIndex];
-                                return item ? `POD: ${item.pod}% — ${item.verified} of ${item.total} polygons verified` : '';
+                                return item ? `${item.pod}% — ${item.verified} of ${item.total} polygons verified` : '';
                             }
                         }
                     }
@@ -258,54 +258,85 @@ function initCharts() {
                     x: { ticks: { font: { size: 9 }, maxRotation: 45 } },
                     y: { min: 0, max: 100, ticks: { font: { size: 9 }, callback: v => v + '%' } }
                 },
-                plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `POD: ${ctx.parsed.y}%` } } }
+                plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => `Verified: ${ctx.parsed.y}%` } } }
             }
         });
     }
 }
 
-function updateCharts(stats) {
+function updateCharts(stats, evidence) {
     if (podDonutChart) {
-        podDonutChart.data.datasets[0].data = [stats.total_hits || 0, stats.total_misses || 0];
+        podDonutChart.data.labels = ['Captured', 'Missed'];
+        podDonutChart.data.datasets[0].data = [evidence.total_inside || 0, evidence.total_outside || 0];
         podDonutChart.update();
     }
     if (hitsBarChart) {
-        hitsBarChart.data.datasets[0].data = [stats.lsr_hits || 0];
-        hitsBarChart.data.datasets[1].data = [stats.ffw_hits || 0];
-        hitsBarChart.data.datasets[2].data = [stats.lsr_misses || 0];
-        hitsBarChart.data.datasets[3].data = [stats.ffw_misses || 0];
+        hitsBarChart.data.datasets[0].data = [evidence.lsr_inside || 0];
+        hitsBarChart.data.datasets[1].data = [evidence.ffw_inside || 0];
+        hitsBarChart.data.datasets[2].data = [evidence.lsr_outside || 0];
+        hitsBarChart.data.datasets[3].data = [evidence.ffw_outside || 0];
         hitsBarChart.update();
     }
 }
 
-function animateValue(el, endVal, duration = 400, suffix = '') {
-    const startVal = parseFloat(el.textContent) || 0;
-    if (startVal === endVal) return;
-    const startTime = performance.now();
-    const step = (now) => {
-        const progress = Math.min((now - startTime) / duration, 1);
-        const eased = 1 - Math.pow(1 - progress, 3);
-        const current = startVal + (endVal - startVal) * eased;
-        el.textContent = (Number.isInteger(endVal) ? Math.round(current) : current.toFixed(1)) + suffix;
-        if (progress < 1) requestAnimationFrame(step);
-    };
-    requestAnimationFrame(step);
-}
+// animateValue() is provided by shared.js
 
-function updateStatistics(stats) {
-    const podPct = stats.pod * 100;
+function updateStatistics(stats, evidence) {
+    // Headline: Event Capture Rate
+    const ratePct = (stats.event_capture_rate || 0) * 100;
+    const totalEvents = stats.total_events || 0;
+    const totalHits = evidence.total_inside || 0;
 
-    const numericStats = {
-        totalHits: stats.total_hits,
-        totalMisses: stats.total_misses,
-        lsrHits: stats.lsr_hits,
-        lsrMisses: stats.lsr_misses,
-        ffwHits: stats.ffw_hits,
-        ffwMisses: stats.ffw_misses,
+    const goalPct = parseInt(document.getElementById('podThreshold')?.value, 10) || 70;
+
+    const rateEl = document.getElementById('captureRate');
+    if (rateEl) {
+        rateEl.classList.remove('stat-flash');
+        void rateEl.offsetWidth;
+        rateEl.classList.add('stat-flash');
+        animateValue(rateEl, ratePct, 400, '%');
+        rateEl.style.color = colorForVerificationRate(ratePct, goalPct);
+    }
+
+    const subtitleEl = document.getElementById('captureRateSubtitle');
+    if (subtitleEl) {
+        subtitleEl.textContent = totalEvents > 0
+            ? `${totalHits} of ${totalEvents} flood events captured by FHO`
+            : 'No flood events in verification window';
+    }
+
+    // Polygon verification details (collapsible section)
+    const verifiedEl = document.getElementById('verifiedPolygons');
+    const unverifiedEl = document.getElementById('unverifiedPolygons');
+    const totalPolyEl = document.getElementById('totalPolygons');
+    if (verifiedEl) animateValue(verifiedEl, stats.verified_polygons || 0);
+    if (unverifiedEl) animateValue(unverifiedEl, stats.unverified_polygons || 0);
+    if (totalPolyEl) totalPolyEl.textContent = stats.total_polygons || 0;
+
+    const verifPct = stats.total_polygons > 0
+        ? (stats.verified_polygons / stats.total_polygons * 100)
+        : 0;
+    const progressBar = document.getElementById('podThresholdProgress');
+    if (progressBar) {
+        progressBar.style.width = `${verifPct}%`;
+        progressBar.setAttribute('aria-valuenow', verifPct);
+        progressBar.className = progressBarClassesForRate(verifPct, goalPct);
+    }
+    const percentEl = document.getElementById('podThresholdPercent');
+    if (percentEl) {
+        percentEl.textContent = `${verifPct.toFixed(1)}%`;
+        percentEl.className = badgeClassesForRate(verifPct, goalPct);
+    }
+
+    // Evidence counts
+    const evidenceStats = {
+        lsrInside: evidence.lsr_inside,
+        lsrOutside: evidence.lsr_outside,
+        ffwInside: evidence.ffw_inside,
+        ffwOutside: evidence.ffw_outside,
         totalDays: stats.total_days
     };
-
-    Object.entries(numericStats).forEach(([id, value]) => {
+    Object.entries(evidenceStats).forEach(([id, value]) => {
         const el = document.getElementById(id);
         if (el) {
             el.classList.remove('stat-flash');
@@ -315,36 +346,16 @@ function updateStatistics(stats) {
         }
     });
 
-    const podEl = document.getElementById('pod');
-    if (podEl) {
-        podEl.classList.remove('stat-flash');
-        void podEl.offsetWidth;
-        podEl.classList.add('stat-flash');
-        animateValue(podEl, podPct, 400, '%');
-        podEl.style.color = podPct >= 70 ? 'var(--success-color)' : podPct >= 40 ? 'var(--warning-color)' : 'var(--danger-color)';
-    }
-
-    // FAR and CSI
-    const farEl = document.getElementById('farValue');
-    if (farEl) {
-        const farPct = (stats.far || 0) * 100;
-        animateValue(farEl, farPct, 400, '%');
-        farEl.style.color = farPct <= 30 ? 'var(--success-color)' : farPct <= 60 ? 'var(--warning-color)' : 'var(--danger-color)';
-    }
-    const csiEl = document.getElementById('csiValue');
-    if (csiEl) {
-        const csiPct = (stats.csi || 0) * 100;
-        animateValue(csiEl, csiPct, 400, '%');
-        csiEl.style.color = csiPct >= 40 ? 'var(--success-color)' : csiPct >= 20 ? 'var(--warning-color)' : 'var(--danger-color)';
-    }
-
     const daysEl = document.getElementById('daysIncluded');
-    if (daysEl) daysEl.textContent = stats.days_included.join(', ');
+    if (daysEl) daysEl.textContent = (stats.days_included || []).join(', ');
 
     const emptyState = document.getElementById('mapEmptyState');
-    if (emptyState) emptyState.style.display = 'none';
+    if (emptyState) {
+        emptyState.style.display = 'none';
+        emptyState.setAttribute('aria-hidden', 'true');
+    }
 
-    updateCharts(stats);
+    updateCharts(stats, evidence);
 }
 
 function updateAreaBinChart(data) {
@@ -374,15 +385,16 @@ function updateAreaBinChart(data) {
 function updateDailyPodChart(data) {
     const section = document.getElementById('dailySeriesSection');
     const series = data.daily_series;
-    if (!dailyPodChart || !series || series.length <= 1) {
+    const validSeries = (series || []).filter(d => d && typeof d.date === 'string');
+    if (!dailyPodChart || validSeries.length <= 1) {
         if (section) section.style.display = 'none';
         return;
     }
     if (section) section.style.display = '';
-    dailyPodChart.data.labels = series.map(d => d.date.slice(5));
-    dailyPodChart.data.datasets[0].data = series.map(d => d.pod);
-    dailyPodChart.data.datasets[0].pointBackgroundColor = series.map(d =>
-        d.pod >= 70 ? '#059669' : d.pod >= 40 ? '#d97706' : '#dc2626'
+    dailyPodChart.data.labels = validSeries.map(d => d.date.slice(5));
+    dailyPodChart.data.datasets[0].data = validSeries.map(d => d.verification_rate);
+    dailyPodChart.data.datasets[0].pointBackgroundColor = validSeries.map(d =>
+        d.verification_rate >= 70 ? '#059669' : d.verification_rate >= 40 ? '#d97706' : '#dc2626'
     );
     dailyPodChart.update();
 }
@@ -403,53 +415,9 @@ function updateVerifWindow(data) {
     }
 }
 
-function updatePodThresholdStats(data) {
-    if (!data.pod_analysis) return;
+// Polygon verification stats are now integrated into updateStatistics()
 
-    const {
-        threshold_percentage = 0,
-        above_threshold = 0,
-        below_threshold = 0,
-        total_polygons = 0
-    } = data.pod_analysis;
-
-    const goalPct = parseInt(document.getElementById('podThreshold')?.value || '70');
-
-    const progressBar = document.getElementById('podThresholdProgress');
-    if (progressBar) {
-        progressBar.style.width = `${threshold_percentage}%`;
-        progressBar.setAttribute('aria-valuenow', threshold_percentage);
-        progressBar.className = 'progress-bar';
-        if (threshold_percentage >= goalPct) progressBar.classList.add('bg-success');
-        else if (threshold_percentage >= goalPct * 0.6) progressBar.classList.add('bg-warning');
-        else progressBar.classList.add('bg-danger');
-    }
-
-    const percentEl = document.getElementById('podThresholdPercent');
-    if (percentEl) {
-        percentEl.textContent = `${threshold_percentage.toFixed(1)}%`;
-        percentEl.className = 'badge';
-        if (threshold_percentage >= goalPct) percentEl.classList.add('bg-success');
-        else if (threshold_percentage >= goalPct * 0.6) percentEl.classList.add('bg-warning');
-        else percentEl.classList.add('bg-danger');
-    }
-
-    const countEl = document.getElementById('podThresholdCount');
-    if (countEl) countEl.textContent = above_threshold;
-
-    const totalEl = document.getElementById('podTotalCount');
-    if (totalEl) totalEl.textContent = total_polygons;
-}
-
-// Helper function to create popup content
-function formatDateStr(val) {
-    if (!val) return 'Unknown';
-    try {
-        const d = new Date(val);
-        if (isNaN(d)) return String(val);
-        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    } catch { return String(val); }
-}
+// formatDateStr() is provided by shared.js
 
 function createPopupContent(type, feature, isHit = null) {
     const hitColor = config.colors.hit;
@@ -457,9 +425,9 @@ function createPopupContent(type, feature, isHit = null) {
 
     switch (type) {
         case 'FHO': {
-            const issuanceTime = document.getElementById('issuance').value === '00Z' ? 'AM' : 'PM';
-            const forecastPeriod = document.getElementById('forecastPeriod').value;
-            const issuanceDate = document.getElementById('issuanceDate').value;
+            const issuanceTime = (document.getElementById('issuance')?.value || 'AM').toUpperCase();
+            const forecastPeriod = document.getElementById('forecastPeriod')?.value || '';
+            const issuanceDate = document.getElementById('issuanceDate')?.value || '';
             const impactLevel = feature.properties?.impact_level || 'Limited_merged';
             return `
                 <div class="warning-popup">
@@ -475,7 +443,7 @@ function createPopupContent(type, feature, isHit = null) {
         case 'LSR': {
             const statusColor = isHit ? hitColor : missColor;
             const statusLabel = isHit ? 'HIT' : 'MISS';
-            const eventType = feature.properties.EVENT || 'Unknown';
+            const eventType = escapeHtml(feature.properties.EVENT || 'Unknown');
             return `
                 <div class="warning-popup">
                     <div class="title" style="border-left: 4px solid ${statusColor}; padding-left: 8px;">
@@ -484,8 +452,8 @@ function createPopupContent(type, feature, isHit = null) {
                     <div class="details">
                         <div><span class="label">Event:</span> <span class="value">${eventType}</span></div>
                         <div><span class="label">Time:</span> <span class="value">${formatDateStr(feature.properties.VALID)}</span></div>
-                        <div><span class="label">Location:</span> <span class="value">${feature.properties.CITY || ''}, ${feature.properties.STATE || ''}</span></div>
-                        <div><span class="label">Source:</span> <span class="value">${feature.properties.SOURCE || 'Unknown'}</span></div>
+                        <div><span class="label">Location:</span> <span class="value">${escapeHtml(feature.properties.CITY || '')}, ${escapeHtml(feature.properties.STATE || '')}</span></div>
+                        <div><span class="label">Source:</span> <span class="value">${escapeHtml(feature.properties.SOURCE || 'Unknown')}</span></div>
                     </div>
                 </div>`;
         }
@@ -500,7 +468,7 @@ function createPopupContent(type, feature, isHit = null) {
                     <div class="details">
                         <div><span class="label">Issued:</span> <span class="value">${formatDateStr(feature.properties.ISSUED)}</span></div>
                         <div><span class="label">Expired:</span> <span class="value">${formatDateStr(feature.properties.EXPIRED)}</span></div>
-                        <div><span class="label">Impact:</span> <span class="value">${feature.properties.DAMAGTAG || 'No Tag'}</span></div>
+                        <div><span class="label">Impact:</span> <span class="value">${escapeHtml(feature.properties.DAMAGTAG || 'No Tag')}</span></div>
                     </div>
                 </div>`;
         }
@@ -511,9 +479,10 @@ function createPopupContent(type, feature, isHit = null) {
 
 // Helper function to get style for FFW based on damage tag
 function getFFWStyle(feature, isHit) {
-    if (feature.properties.DAMAGTAG === 'CATASTROPHIC') {
+    const tag = feature.properties?.DAMAGTAG;
+    if (tag === 'CATASTROPHIC') {
         return config.styles.ffwsCatastrophic;
-    } else if (feature.properties.DAMAGTAG === 'CONSIDERABLE') {
+    } else if (tag === 'CONSIDERABLE') {
         return config.styles.ffwsConsiderable;
     }
     return isHit ? config.styles.ffwsHit : config.styles.ffwsMiss;
@@ -558,34 +527,7 @@ const ErrorHandler = {
         console.error("Error:", error);
         if (fallbackAction) fallbackAction();
     },
-    showError: (message) => {
-        const existing = document.getElementById('error-notification');
-        if (existing) existing.remove();
-
-        const toast = document.createElement('div');
-        toast.id = 'error-notification';
-        toast.className = 'error-toast';
-        toast.innerHTML = `
-            <svg class="error-toast-icon" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.168 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495zM10 6a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 0110 6zm0 9a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
-            </svg>
-            <span class="error-toast-message">${message}</span>
-            <button type="button" class="btn-close" aria-label="Close"></button>
-        `;
-        document.body.appendChild(toast);
-
-        toast.querySelector('.btn-close').addEventListener('click', () => {
-            toast.classList.add('dismissing');
-            toast.addEventListener('animationend', () => toast.remove());
-        });
-
-        setTimeout(() => {
-            if (toast.parentNode) {
-                toast.classList.add('dismissing');
-                toast.addEventListener('animationend', () => toast.remove());
-            }
-        }, 5000);
-    }
+    showError: (message) => showError(message)  // delegates to shared.js
 };
 
 // Enhanced loading state management
@@ -604,7 +546,8 @@ const LoadingManager = {
                 }
             }
         } else {
-            document.querySelector('.loading-overlay').style.display = isLoading ? 'flex' : 'none';
+            const overlay = document.querySelector('.loading-overlay');
+            if (overlay) overlay.style.display = isLoading ? 'flex' : 'none';
         }
     },
     
@@ -612,23 +555,49 @@ const LoadingManager = {
 };
 
 function resetStatsDisplay() {
-    ['pod', 'totalHits', 'totalMisses', 'lsrHits', 'lsrMisses', 'ffwHits', 'ffwMisses', 'totalDays', 'daysIncluded', 'farValue', 'csiValue'].forEach(id => {
+    ['captureRate', 'verifiedPolygons', 'unverifiedPolygons',
+     'totalPolygons', 'lsrInside', 'lsrOutside', 'ffwInside',
+     'ffwOutside', 'totalDays', 'daysIncluded'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.textContent = '--';
     });
+    const subtitleEl = document.getElementById('captureRateSubtitle');
+    if (subtitleEl) subtitleEl.textContent = 'Select a date to view capture rate';
     const progressBar = document.getElementById('podThresholdProgress');
     if (progressBar) {
         progressBar.style.width = '0%';
         progressBar.setAttribute('aria-valuenow', 0);
+        progressBar.className = 'progress-bar';
     }
-    ['podThresholdPercent', 'podThresholdCount', 'podTotalCount'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.textContent = '--';
-    });
+    const percentEl = document.getElementById('podThresholdPercent');
+    if (percentEl) {
+        percentEl.textContent = '-';
+        percentEl.className = 'badge bg-primary';
+    }
+    if (podDonutChart) {
+        podDonutChart.data.datasets[0].data = [0, 1];
+        podDonutChart.update();
+    }
+    if (hitsBarChart) {
+        hitsBarChart.data.datasets.forEach(ds => { ds.data = [0]; });
+        hitsBarChart.update();
+    }
+    if (areaBinChart) {
+        areaBinChart.data.labels = [];
+        areaBinChart.data.datasets[0].data = [];
+        areaBinChart.update();
+    }
+    if (dailyPodChart) {
+        dailyPodChart.data.labels = [];
+        dailyPodChart.data.datasets[0].data = [];
+        dailyPodChart.update();
+    }
     const abSec = document.getElementById('areaBinSection');
     if (abSec) abSec.style.display = 'none';
     const dsSec = document.getElementById('dailySeriesSection');
     if (dsSec) dsSec.style.display = 'none';
+    const vwRow = document.getElementById('fhoVerifWindow');
+    if (vwRow) vwRow.style.display = 'none';
 }
 
 function countFeatures(geojson) {
@@ -639,11 +608,12 @@ function countFeatures(geojson) {
 }
 
 function updateLayerCounts(data) {
+    const geom = data?.geometries || {};
     const counts = {
-        lsrsHit: countFeatures(data.geometries.lsrs_hit),
-        lsrsMiss: countFeatures(data.geometries.lsrs_miss),
-        ffwsHit: countFeatures(data.geometries.ffws_hit),
-        ffwsMiss: countFeatures(data.geometries.ffws_miss)
+        lsrsHit: countFeatures(geom.lsrs_hit),
+        lsrsMiss: countFeatures(geom.lsrs_miss),
+        ffwsHit: countFeatures(geom.ffws_hit),
+        ffwsMiss: countFeatures(geom.ffws_miss)
     };
     Object.entries(counts).forEach(([key, count]) => {
         const el = document.getElementById(`count-${key}`);
@@ -662,9 +632,13 @@ function renderMapLayers(data) {
         const p = emptyState.querySelector('p');
         if (p) p.textContent = 'No FHO polygons found for this selection';
         emptyState.style.display = '';
+        emptyState.setAttribute('aria-hidden', 'false');
         return;
     }
-    if (emptyState) emptyState.style.display = 'none';
+    if (emptyState) {
+        emptyState.style.display = 'none';
+        emptyState.setAttribute('aria-hidden', 'true');
+    }
 
     let mapBounds = null;
     mapBounds = createAndAddLayer(data.geometries.fho, 'FHO', null, layers.fho, mapBounds);
@@ -707,7 +681,7 @@ function renderMapLayers(data) {
                         <div class="details">
                             <div><span class="label">Date:</span> <span class="value">${p.issuance_date} ${p.issuance_time}</span></div>
                             <div><span class="label">Period:</span> <span class="value">Days ${p.forecast_period}</span></div>
-                            <div><span class="label">Area:</span> <span class="value">${p.area_sqkm.toLocaleString()} km² (${p.area_bin})</span></div>
+                            <div><span class="label">Area:</span> <span class="value">${(p.area_sqkm ?? 0).toLocaleString()} km² (${p.area_bin || 'N/A'})</span></div>
                             ${eventBar}
                         </div>
                     </div>`, { maxWidth: 280 });
@@ -744,14 +718,14 @@ function renderMapLayers(data) {
 }
 
 let currentAbortController = null;
+let _fetchGeneration = 0;
 
 async function handleMapUpdate(filters) {
     const cacheKey = generateCacheKey(filters);
 
     if (statsCache.has(cacheKey)) {
         const cachedData = statsCache.get(cacheKey);
-        updateStatistics(cachedData.statistics);
-        updatePodThresholdStats(cachedData);
+        updateStatistics(cachedData.statistics, cachedData.evidence || {});
         updateVerifWindow(cachedData);
         updateAreaBinChart(cachedData);
         updateDailyPodChart(cachedData);
@@ -763,6 +737,7 @@ async function handleMapUpdate(filters) {
         currentAbortController.abort();
     }
     currentAbortController = new AbortController();
+    const gen = ++_fetchGeneration;
 
     try {
         LoadingManager.setLoading(true);
@@ -779,11 +754,12 @@ async function handleMapUpdate(filters) {
 
         const data = await response.json();
 
+        if (gen !== _fetchGeneration) return;
+
         statsCache.set(cacheKey, data);
         manageCacheSize();
 
-        updateStatistics(data.statistics);
-        updatePodThresholdStats(data);
+        updateStatistics(data.statistics, data.evidence || {});
         updateVerifWindow(data);
         updateAreaBinChart(data);
         updateDailyPodChart(data);
@@ -791,13 +767,16 @@ async function handleMapUpdate(filters) {
         pushState();
     } catch (error) {
         if (error.name === 'AbortError') return;
+        if (gen !== _fetchGeneration) return;
         resetStatsDisplay();
         ErrorHandler.handleError(error, () => {
             map.fitBounds(config.bounds.CONUS);
             ErrorHandler.showError('Failed to update map. Please try again.');
         });
     } finally {
-        LoadingManager.setLoading(false);
+        if (gen === _fetchGeneration) {
+            LoadingManager.setLoading(false);
+        }
     }
 }
 
@@ -806,12 +785,19 @@ let updateMapTimeout;
 async function updateMap() {
     clearTimeout(updateMapTimeout);
     updateMapTimeout = setTimeout(async () => {
+        const issuanceDateEl = document.getElementById('issuanceDate');
+        const endDateEl = document.getElementById('endDate');
+        const issuanceEl = document.getElementById('issuance');
+        const forecastPeriodEl = document.getElementById('forecastPeriod');
+        const podThresholdEl = document.getElementById('podThreshold');
+        if (!issuanceDateEl || !issuanceEl || !forecastPeriodEl) return;
+
         const filters = {
-            issuance_date: document.getElementById('issuanceDate').value,
-            end_date: document.getElementById('endDate').value,
-            issuance: document.getElementById('issuance').value,
-            forecast_period: document.getElementById('forecastPeriod').value,
-            pod_threshold: parseInt(document.getElementById('podThreshold').value) / 100
+            issuance_date: issuanceDateEl.value,
+            end_date: endDateEl ? endDateEl.value : '',
+            issuance: issuanceEl.value,
+            forecast_period: forecastPeriodEl.value,
+            pod_threshold: podThresholdEl ? parseInt(podThresholdEl.value) / 100 : 0.7
         };
 
         if (!filters.issuance_date || !filters.issuance || !filters.forecast_period) {
@@ -852,7 +838,10 @@ async function loadDates() {
 
         dates.sort((a, b) => new Date(b) - new Date(a));
 
-        allDates = dates.map(d => new Date(d).toISOString().split('T')[0]);
+        allDates = dates.map(d => {
+            try { return new Date(d).toISOString().split('T')[0]; }
+            catch { return null; }
+        }).filter(Boolean);
 
         allDates.forEach(formattedDate => {
             issuanceDateSelect.add(new Option(formattedDate, formattedDate));
@@ -876,30 +865,7 @@ function initializeTooltips() {
     });
 }
 
-// Segmented button group helper
-function initSegGroup(groupId, hiddenId, onChange) {
-    const group = document.getElementById(groupId);
-    const hidden = document.getElementById(hiddenId);
-    if (!group || !hidden) return;
-    group.querySelectorAll('.seg-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            group.querySelectorAll('.seg-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            hidden.value = btn.dataset.value;
-            if (onChange) onChange();
-        });
-    });
-}
-
-function setSegValue(groupId, hiddenId, value) {
-    const group = document.getElementById(groupId);
-    const hidden = document.getElementById(hiddenId);
-    if (!group || !hidden) return;
-    hidden.value = value;
-    group.querySelectorAll('.seg-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.value === value);
-    });
-}
+// initSegGroup() and setSegValue() are provided by shared.js
 
 // All loaded dates (kept for year-pill filtering and prev/next stepping)
 let allDates = [];
@@ -994,21 +960,20 @@ function restoreState() {
     const end = params.get('end');
     const pod = params.get('pod');
     let restored = false;
-    if (date) { document.getElementById('issuanceDate').value = date; restored = true; }
+    const dateEl = document.getElementById('issuanceDate');
+    if (date && dateEl) { dateEl.value = date; restored = true; }
     if (iss) setSegValue('issuanceGroup', 'issuance', iss);
     if (fp) setSegValue('forecastPeriodGroup', 'forecastPeriod', fp);
-    if (end) document.getElementById('endDate').value = end;
-    if (pod) {
-        document.getElementById('podThreshold').value = pod;
-        const sliderLabel = document.getElementById('podSliderLabel');
-        if (sliderLabel) sliderLabel.textContent = `${pod}%`;
-        const statsLabel = document.getElementById('podThresholdLabel');
-        if (statsLabel) statsLabel.textContent = `POD \u2265 ${(pod / 100).toFixed(2)}`;
-    }
+    const endEl = document.getElementById('endDate');
+    if (end && endEl) endEl.value = end;
+    const podEl = document.getElementById('podThreshold');
+    if (pod && podEl) podEl.value = pod;
     return restored;
 }
 
-// Event listeners
+const darkBaseMap = createDarkBaseMap();
+const dateEventMap = {};
+
 document.addEventListener('DOMContentLoaded', async () => {
     try {
         initializeTooltips();
@@ -1031,20 +996,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const formControls = {
             'issuanceDate': updateMap,
             'endDate': updateMap,
-            'podThreshold': function() {
-                const sliderLabel = document.getElementById('podSliderLabel');
-                if (sliderLabel) sliderLabel.textContent = `${this.value}%`;
-                const statsLabel = document.getElementById('podThresholdLabel');
-                if (statsLabel) statsLabel.textContent = `POD \u2265 ${(this.value / 100).toFixed(2)}`;
-                // Re-render POD threshold stats with cached data (no refetch needed)
-                const cacheKey = generateCacheKey({
-                    issuance_date: document.getElementById('issuanceDate').value,
-                    end_date: document.getElementById('endDate').value,
-                    issuance: document.getElementById('issuance').value,
-                    forecast_period: document.getElementById('forecastPeriod').value
-                });
-                if (statsCache.has(cacheKey)) updatePodThresholdStats(statsCache.get(cacheKey));
-            },
+            'podThreshold': function() {},
             'quickSelect': function(e) {
                 try {
                     if (!e.target.value) return;
@@ -1056,8 +1008,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
 
                     if (event.issuance) {
-                        const issuanceValue = event.issuance.toLowerCase() === 'am' ? '00Z' : '12Z';
-                        setSegValue('issuanceGroup', 'issuance', issuanceValue);
+                        setSegValue('issuanceGroup', 'issuance', event.issuance.toUpperCase());
 
                         if (event.period) {
                             setSegValue('forecastPeriodGroup', 'forecastPeriod', event.period);
@@ -1085,13 +1036,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
-        const podSlider = document.getElementById('podThreshold');
-        if (podSlider) {
-            podSlider.addEventListener('input', function() {
-                const label = document.getElementById('podSliderLabel');
-                if (label) label.textContent = `${this.value}%`;
-            });
-        }
+        // podThreshold is a hidden input; no slider listener needed
 
         const resetButton = document.getElementById('resetView');
         if (resetButton) {
@@ -1112,7 +1057,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         });
 
-        initThemeToggle();
+        initThemeToggle(map, lightBaseMap, darkBaseMap);
 
         document.getElementById('exportPng')?.addEventListener('click', async () => {
             if (typeof html2canvas === 'undefined') { ErrorHandler.showError('PNG export not available'); return; }
@@ -1147,10 +1092,10 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         document.getElementById('exportCsv')?.addEventListener('click', async () => {
             const filters = {
-                issuance_date: document.getElementById('issuanceDate').value,
-                end_date: document.getElementById('endDate').value,
-                issuance: document.getElementById('issuance').value,
-                forecast_period: document.getElementById('forecastPeriod').value
+                issuance_date: document.getElementById('issuanceDate')?.value,
+                end_date: document.getElementById('endDate')?.value,
+                issuance: document.getElementById('issuance')?.value,
+                forecast_period: document.getElementById('forecastPeriod')?.value
             };
             if (!filters.issuance_date) { ErrorHandler.showError('Select a date first'); return; }
             try {
@@ -1190,8 +1135,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 case '1': setSegValue('forecastPeriodGroup', 'forecastPeriod', '1-3'); updateMap(); break;
                 case '2': setSegValue('forecastPeriodGroup', 'forecastPeriod', '4-7'); updateMap(); break;
                 case '3': setSegValue('forecastPeriodGroup', 'forecastPeriod', '1-7'); updateMap(); break;
-                case 'a': case 'A': setSegValue('issuanceGroup', 'issuance', '00Z'); updateMap(); break;
-                case 'p': case 'P': setSegValue('issuanceGroup', 'issuance', '12Z'); updateMap(); break;
+                case 'a': case 'A': setSegValue('issuanceGroup', 'issuance', 'AM'); updateMap(); break;
+                case 'p': case 'P': setSegValue('issuanceGroup', 'issuance', 'PM'); updateMap(); break;
             }
         });
     } catch (error) {
@@ -1199,47 +1144,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         ErrorHandler.showError('Failed to initialize application. Please refresh the page.');
     }
 });
-
-
-const darkBaseMap = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains: 'abcd',
-    maxZoom: 20,
-    minZoom: 0
-});
-
-const sunIcon = '<path stroke-linecap="round" stroke-linejoin="round" d="M12 3v2.25m6.364.386l-1.591 1.591M21 12h-2.25m-.386 6.364l-1.591-1.591M12 18.75V21m-4.773-4.227l-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />';
-const moonIcon = '<path stroke-linecap="round" stroke-linejoin="round" d="M21.752 15.002A9.718 9.718 0 0112.478 3.34a9.72 9.72 0 109.274 11.662z" />';
-
-function initThemeToggle() {
-    const saved = localStorage.getItem('fho-theme');
-    if (saved === 'dark') applyTheme('dark');
-
-    const btn = document.getElementById('themeToggle');
-    if (btn) {
-        btn.addEventListener('click', () => {
-            const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-            applyTheme(next);
-            localStorage.setItem('fho-theme', next);
-        });
-    }
-}
-
-function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    const icon = document.getElementById('themeIcon');
-    if (icon) icon.innerHTML = theme === 'dark' ? sunIcon : moonIcon;
-
-    if (theme === 'dark') {
-        map.removeLayer(lightBaseMap);
-        darkBaseMap.addTo(map);
-    } else {
-        map.removeLayer(darkBaseMap);
-        lightBaseMap.addTo(map);
-    }
-}
-
-const dateEventMap = {};
 
 function loadHighImpactEvents() {
     return fetch('/api/high-impact-events')

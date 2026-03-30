@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import io
 import json
 import logging
@@ -28,12 +29,16 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from glob import glob
-
+import fiona
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import requests
 import urllib3
+try:
+    from shapely.ops import unary_union as _unary_union
+except ImportError:
+    _unary_union = None
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,24 @@ def _set_max_workers(n):
     global MAX_WORKERS
     MAX_WORKERS = n
 
+
+_gpkg_write_lock = threading.Lock()
+
+
+def _write_layer(gdf, output_path, layer_name):
+    """Write a GeoDataFrame to a GeoPackage, replacing the layer if it already exists.
+
+    Serialized with a lock since GPKG/SQLite is not safe for concurrent writes.
+    """
+    with _gpkg_write_lock:
+        if os.path.exists(output_path):
+            try:
+                if layer_name in fiona.listlayers(output_path):
+                    fiona.remove(output_path, layer=layer_name)
+            except Exception as exc:
+                log.debug("Could not check/remove existing layer %s: %s", layer_name, exc)
+        gdf.to_file(output_path, layer=layer_name, driver="GPKG")
+
 # IEM LSR field rename mapping
 LSR_FIELD_MAP = {
     "typetext": "EVENT",
@@ -115,14 +138,21 @@ def _get_session():
     return _thread_local.session
 
 
+class _NotFound:
+    """Sentinel returned by http_get for 404 responses (vs None for real failures)."""
+    pass
+
+NOT_FOUND = _NotFound()
+
+
 def http_get(url, *, stream=False, timeout=60):
-    """GET with retry + exponential backoff.  Returns Response or None on 404."""
+    """GET with retry + exponential backoff.  Returns Response, NOT_FOUND for 404, or None on failure."""
     session = _get_session()
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             r = session.get(url, verify=False, stream=stream, timeout=timeout)
             if r.status_code == 404:
-                return None
+                return NOT_FOUND
             r.raise_for_status()
             return r
         except requests.RequestException as exc:
@@ -288,17 +318,27 @@ def _gdrive_download_file(sess, file_id, filename):
                 log.debug("GDrive download %s returned %d", filename, resp.status_code)
                 return None
             content = resp.content
-            if len(content) < 500 and b"html" in content[:200].lower():
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, "html.parser")
-                form = soup.find("form", {"id": "download-form"})
-                if form and "action" in form.attrs:
-                    inputs = form.find_all("input", {"type": "hidden"})
-                    params = {inp["name"]: inp["value"] for inp in inputs}
-                    redirect_url = form["action"]
-                    resp2 = sess.get(redirect_url, params=params, stream=True, timeout=120)
-                    if resp2.status_code == 200:
-                        content = resp2.content
+            if b"html" in content[:200].lower():
+                try:
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(content, "html.parser")
+                    form = soup.find("form", {"id": "download-form"})
+                    if form and "action" in form.attrs:
+                        inputs = form.find_all("input", {"type": "hidden"})
+                        params = {inp["name"]: inp["value"] for inp in inputs}
+                        redirect_url = form["action"]
+                        resp2 = sess.get(redirect_url, params=params, stream=True, timeout=120)
+                        if resp2.status_code == 200:
+                            content = resp2.content
+                    else:
+                        log.warning("GDrive returned HTML (not a download form) for %s", filename)
+                        return None
+                except ImportError:
+                    log.warning("GDrive returned HTML for %s but bs4 not installed", filename)
+                    return None
+            if not content[:4].startswith(b'PK'):
+                log.warning("GDrive download for %s is not a valid zip file (got %d bytes)", filename, len(content))
+                return None
             return content
         except requests.RequestException as exc:
             if attempt == MAX_RETRIES:
@@ -337,8 +377,11 @@ def _get_gdrive_fho_zips(years, modes):
 
 
 # ---------------------------------------------------------------------------
-# State tracking
+# State tracking (thread-safe)
 # ---------------------------------------------------------------------------
+_state_lock = threading.Lock()
+
+
 def load_state(path=STATE_FILE):
     if os.path.exists(path):
         with open(path, "r") as f:
@@ -346,9 +389,24 @@ def load_state(path=STATE_FILE):
     return {"fho_last_date": {}, "lsr_last_date": None, "wwa_years_done": []}
 
 
+def _atomic_write_json(data, path):
+    """Write JSON atomically via temp file + rename to prevent corruption on crash."""
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
+
+
 def save_state(state, path=STATE_FILE):
-    with open(path, "w") as f:
-        json.dump(state, f, indent=2)
+    with _state_lock:
+        _atomic_write_json(state, path)
+
+
+def _update_state(state, updater):
+    """Thread-safe state read-modify-write. updater(state) mutates state in place."""
+    with _state_lock:
+        updater(state)
+        _atomic_write_json(state, STATE_FILE)
 
 
 # ===================================================================
@@ -467,7 +525,7 @@ def process_fho_zip_bytes(zip_bytes, zip_name, issuance_time):
                     continue
 
                 gdf = gdf.to_crs(CRS_TARGET)
-                gdf = gdf[gdf.geometry.notnull() & gdf.is_valid]
+                gdf = gdf[gdf.geometry.notnull() & gdf.geometry.is_valid]
                 gdf["geometry"] = gdf["geometry"].buffer(0)
                 if gdf.empty:
                     continue
@@ -527,7 +585,11 @@ def create_limited_inclusive_layer(gdf):
         subset = grp[grp["impact_level"].isin(valid_levels)]
         if subset.empty:
             continue
-        union_geom = subset.geometry.union_all()
+        geom_series = subset.geometry
+        if hasattr(geom_series, 'union_all'):
+            union_geom = geom_series.union_all()
+        else:
+            union_geom = _unary_union(geom_series)
         if union_geom.is_empty:
             continue
         vs, ve = parse_valid_range(dt, per, tm)
@@ -559,18 +621,30 @@ def create_limited_inclusive_layer(gdf):
 
 
 def _download_single_fho(url):
-    """Download a single FHO zip from NWC. Returns (filename, bytes) or (filename, None)."""
+    """Download a single FHO zip from NWC. Returns (filename, bytes, status).
+    status is '404' for expected missing files, 'failed' for errors, 'ok' on success.
+    """
     fname = url.rsplit("/", 1)[-1]
     resp = http_get(url)
+    if isinstance(resp, _NotFound):
+        return fname, None, "404"
     if resp is None:
-        return fname, None
-    return fname, resp.content
+        return fname, None, "failed"
+    return fname, resp.content, "ok"
+
+
+_gdrive_thread_local = threading.local()
 
 
 def _download_single_fho_gdrive(args):
     """Download a single FHO zip from Google Drive. Returns (filename, bytes) or (filename, None)."""
-    fname, file_id, sess = args
-    data = _gdrive_download_file(sess, file_id, fname)
+    fname, file_id, template_sess = args
+    if not hasattr(_gdrive_thread_local, 'sess'):
+        s = requests.Session()
+        s.cookies = template_sess.cookies.copy()
+        s.headers.update(template_sess.headers)
+        _gdrive_thread_local.sess = s
+    data = _gdrive_download_file(_gdrive_thread_local.sess, file_id, fname)
     return fname, data
 
 
@@ -619,6 +693,7 @@ def process_fho(years, output_path, state, update_mode=False):
 
             all_rows = []
             last_good_date = None
+            iter_failures = 0
 
             if _FHO_SOURCE == "nwc":
                 # Build NWC URLs
@@ -636,9 +711,13 @@ def process_fho(years, output_path, state, update_mode=False):
                     futures = {pool.submit(_download_single_fho, u): u for u in urls}
                     for fut in tqdm(as_completed(futures), total=len(futures),
                                     desc=f"FHO {year} {mode.upper()}", unit="zip"):
-                        fname, data = fut.result()
-                        if data is None:
+                        fname, data, status = fut.result()
+                        if status == "404":
                             counters["skipped_404"] += 1
+                            continue
+                        if status == "failed":
+                            counters["failed"] += 1
+                            iter_failures += 1
                             continue
                         counters["downloaded"] += 1
                         try:
@@ -650,6 +729,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         except Exception as exc:
                             log.warning("Error processing %s: %s", fname, exc)
                             counters["failed"] += 1
+                            iter_failures += 1
 
             elif _FHO_SOURCE == "gdrive":
                 # Filter GDrive files for this year+mode
@@ -689,6 +769,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         except Exception as exc:
                             log.warning("Error processing %s: %s", fname, exc)
                             counters["failed"] += 1
+                            iter_failures += 1
 
             else:
                 # Local directory mode
@@ -722,6 +803,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         fname, data = fut.result()
                         if data is None:
                             counters["failed"] += 1
+                            iter_failures += 1
                             continue
                         counters["downloaded"] += 1
                         try:
@@ -733,6 +815,7 @@ def process_fho(years, output_path, state, update_mode=False):
                         except Exception as exc:
                             log.warning("Error processing %s: %s", fname, exc)
                             counters["failed"] += 1
+                            iter_failures += 1
 
             if not all_rows:
                 log.info("  No data for FHO %d %s", year, mode.upper())
@@ -748,16 +831,15 @@ def process_fho(years, output_path, state, update_mode=False):
                     if not existing.empty:
                         log.info("  Merging %d new rows with %d existing rows", len(gdf), len(existing))
                         gdf = pd.concat([existing, gdf], ignore_index=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    log.warning("  Could not read existing layer %s for merge — "
+                                "new data only will be written: %s", layer, exc)
 
-            # Dedup: key = geom_wkt + issuance_date + impact_level + forecast_period
-            gdf["_dedup"] = gdf.apply(
-                lambda r: f"{r.geometry.wkt}_{r['issuance_date']}_{r['impact_level']}_{r['forecast_period']}",
-                axis=1,
-            )
+            # Dedup: key = geom_wkb_hash + issuance_date + impact_level + forecast_period
+            gdf["_geom_hash"] = gdf.geometry.apply(lambda g: hashlib.md5(g.wkb).hexdigest())
+            gdf["_dedup"] = gdf["_geom_hash"] + "_" + gdf["issuance_date"] + "_" + gdf["impact_level"] + "_" + gdf["forecast_period"]
             before = len(gdf)
-            gdf = gdf.drop_duplicates(subset="_dedup", keep="first").drop(columns="_dedup")
+            gdf = gdf.drop_duplicates(subset="_dedup", keep="first").drop(columns=["_dedup", "_geom_hash"])
             log.info("  Dedup: %d → %d (removed %d)", before, len(gdf), before - len(gdf))
 
             gdf = gdf[gdf["impact_level"] != "Limited_merged"]
@@ -772,15 +854,17 @@ def process_fho(years, output_path, state, update_mode=False):
                 labels=["<500", "500-1000", "1000-5000", ">5000"],
                 right=False,
             )
-            gdf["area_bin"] = area_bin.astype(str).replace("nan", "")
+            gdf["area_bin"] = area_bin.cat.add_categories("").fillna("").astype(str)
 
-            gdf.to_file(output_path, layer=layer, driver="GPKG")
+            _write_layer(gdf, output_path, layer)
             counters["processed"] += len(gdf)
             log.info("  Saved layer %s (%d polygons)", layer, len(gdf))
 
-            if last_good_date:
-                state.setdefault("fho_last_date", {})[key] = last_good_date
-                save_state(state)
+            if last_good_date and iter_failures == 0:
+                _update_state(state, lambda s: s.setdefault("fho_last_date", {}).__setitem__(key, last_good_date))
+            elif last_good_date and iter_failures > 0:
+                log.warning("  FHO %s: %d failure(s) — NOT advancing state to avoid gaps",
+                            key, iter_failures)
 
     return counters
 
@@ -822,7 +906,7 @@ def process_lsr(years, output_path, state, update_mode=False):
         ets = (ce + timedelta(days=1)).strftime("%Y%m%d1200")
         url = f"{LSR_API}?sts={sts}&ets={ets}"
         resp = http_get(url, timeout=120)
-        if resp is None:
+        if resp is None or isinstance(resp, _NotFound):
             return cs, ce, None, []
         try:
             geojson = resp.json()
@@ -868,7 +952,7 @@ def process_lsr(years, output_path, state, update_mode=False):
     # Store as tz-naive (implicitly UTC) to match app.py's naive verif windows
     if "VALID" in gdf.columns:
         gdf["VALID"] = pd.to_datetime(gdf["VALID"], errors="coerce", utc=True)
-        gdf["VALID"] = gdf["VALID"].dt.tz_localize(None)
+        gdf["VALID"] = gdf["VALID"].dt.tz_convert(None)
         # Drop rows where VALID failed to parse (NaT) — they'd silently vanish in app.py
         nat_count = gdf["VALID"].isna().sum()
         if nat_count > 0:
@@ -891,22 +975,29 @@ def process_lsr(years, output_path, state, update_mode=False):
     # In update mode, merge with existing LSR data
     if update_mode and os.path.exists(output_path):
         try:
-            existing = gpd.read_file(output_path)
+            existing = gpd.read_file(output_path, layer="LSRs_flood_allYears")
             if not existing.empty:
+                if "VALID" in existing.columns:
+                    existing["VALID"] = pd.to_datetime(existing["VALID"], errors="coerce", utc=True)
+                    existing["VALID"] = existing["VALID"].dt.tz_convert(None)
                 log.info("Merging %d new LSRs with %d existing", len(gdf), len(existing))
                 gdf = pd.concat([existing, gdf], ignore_index=True)
                 gdf = gdf.drop_duplicates(
                     subset=["VALID", "LAT", "LON", "EVENT"], keep="first"
                 )
-        except Exception:
-            pass  # File doesn't exist yet
+        except Exception as exc:
+            log.warning("Could not read existing LSR layer for merge — "
+                        "new data only will be written: %s", exc)
 
-    gdf.to_file(output_path, driver="GPKG")
+    _write_layer(gdf, output_path, "LSRs_flood_allYears")
     counters["processed"] = len(gdf)
     log.info("Saved %d LSRs to %s", len(gdf), output_path)
 
-    # Update state
-    state["lsr_last_date"] = overall_end.strftime("%Y-%m-%d")
+    if counters["failed"] > 0:
+        log.warning("LSR: %d chunk(s) failed — NOT advancing lsr_last_date to avoid gaps. "
+                     "Re-run without --update or fix failures to fill gaps.", counters["failed"])
+    else:
+        _update_state(state, lambda s: s.__setitem__("lsr_last_date", overall_end.strftime("%Y-%m-%d")))
 
     return counters
 
@@ -927,7 +1018,12 @@ def _download_and_process_wwa_year(year):
 
         try:
             with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(tmp)
+                for member in zf.namelist():
+                    target = os.path.realpath(os.path.join(tmp, member))
+                    if not target.startswith(os.path.realpath(tmp) + os.sep) and target != os.path.realpath(tmp):
+                        log.warning("Skipping suspicious zip entry: %s", member)
+                        continue
+                    zf.extract(member, path=tmp)
         except zipfile.BadZipFile:
             return year, None, "bad_zip"
 
@@ -951,12 +1047,12 @@ def _download_and_process_wwa_year(year):
             if "GTYPE" in gdf.columns:
                 gdf = gdf[gdf["GTYPE"] == "P"]
             else:
-                continue
+                log.warning("GTYPE column missing in %s — including all geometry types", shp)
 
             if gdf.empty:
                 continue
 
-            gdf = gdf[gdf.geometry.notnull() & gdf.is_valid]
+            gdf = gdf[gdf.geometry.notnull() & gdf.geometry.is_valid]
             gdf["geometry"] = gdf["geometry"].buffer(0)
 
             if "DAMAGTAG" not in gdf.columns:
@@ -1003,11 +1099,16 @@ def process_wwa(years, output_path, state, update_mode=False):
                 continue
             counters["downloaded"] += 1
             layer = f"wwa_{year}"
-            gdf.to_file(output_path, layer=layer, driver="GPKG")
+            _write_layer(gdf, output_path, layer)
             counters["processed"] += len(gdf)
             log.info("Created %s records", f"{len(gdf):,}")
             log.info("  Saved layer %s (%d features)", layer, len(gdf))
-            state.setdefault("wwa_years_done", []).append(year)
+            _yr = year  # bind for closure safety
+            def _mark_done(s, y=_yr):
+                done = s.setdefault("wwa_years_done", [])
+                if y not in done:
+                    done.append(y)
+            _update_state(state, _mark_done)
 
     return counters
 
@@ -1067,7 +1168,7 @@ def main():
                 ds_name, counters = fut.result()
                 all_counters[ds_name] = counters
                 log.info("Finished %s processing", ds_name.upper())
-        save_state(state)
+        # _update_state() already persists to disk on each call — no extra save needed
     else:
         # Single dataset mode — run sequentially
         ds = datasets[0]
